@@ -1,12 +1,15 @@
 
 import os
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, message=".*xFormers is available.*")
+os.environ["OMP_NUM_THREADS"] = '16'
+
 import torch
 import argparse
 import time
 import matplotlib.pyplot as plt
 plt.switch_backend('agg')
 import MinkowskiEngine as ME
-os.environ["OMP_NUM_THREADS"] = '8'
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Benchmarking Visual Geolocalization",
@@ -61,9 +64,9 @@ def parse_arguments():
     parser.add_argument('--quant_size', type=float, default=2) # query transform
 
     parser.add_argument("--db_cropsize", type=int, default=256) # 256 384 512 640
-    parser.add_argument("--db_resize", type=int, default=256)
+    parser.add_argument("--db_resize", type=int, default=224)
     parser.add_argument("--db_jitter", type=float, default=0)
-    parser.add_argument("--q_resize", type=int, default=256)
+    parser.add_argument("--q_resize", type=int, default=224)
     parser.add_argument("--q_jitter", type=float, default=0)
     parser.add_argument("--sph_size", type=int, default=32) # [61,361] -> short-32
     

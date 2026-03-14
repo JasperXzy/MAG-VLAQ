@@ -96,7 +96,10 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
     #     return test_efficient_ram_usage(args, eval_ds, model, test_method)
     
     model = model.eval()
-    modelq = modelq.eval()
+    if modelq is not None:
+        modelq = modelq.eval()
+    else:
+        modelq = model
 
 
 

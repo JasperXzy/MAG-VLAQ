@@ -10,6 +10,7 @@ import numpy as np
 from tqdm import tqdm
 import torch.nn as nn
 import multiprocessing
+import os
 from os.path import join
 from datetime import datetime
 from torch.utils.data.dataloader import DataLoader
@@ -374,7 +375,7 @@ def main():
 
         
         # Save checkpoint, which contains all training parameters
-        if epoch_num > 40:
+        if True:
             util.save_checkpoint(args, {
                 "epoch_num": epoch_num, 
                 'modelq_state_dict': modelq.state_dict(),
@@ -399,10 +400,13 @@ def main():
 
 
     #### Test best model on test set
-    best_model_state_dict = torch.load(join(args.save_dir, "best_model.pth"))["model_state_dict"]
-    model.load_state_dict(best_model_state_dict)
-
-    recalls, recalls_str = test.test(args, test_ds, model, test_method=args.test_method)
+    best_model_path = join(args.save_dir, "best_model.pth")
+    if os.path.exists(best_model_path):
+        best_model_state_dict = torch.load(best_model_path)["model_state_dict"]
+        model.load_state_dict(best_model_state_dict)
+        recalls, recalls_str = test.test(args, test_ds, model, test_method=args.test_method, modelq=modelq)
+    else:
+        logging.info("best_model.pth not found, skipping final test.")
     # logging.info(f"Recalls on {test_ds}: {recalls_str}")
 
 
