@@ -8,3 +8,6 @@ venv/
 .DS_Store
 output/
 checkpoints/
+logs/
+results/
+results.txt
