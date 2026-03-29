@@ -1,8 +1,3 @@
-
-
-
-
-
 import torch
 import torch.nn as nn
 import torchvision
@@ -44,7 +39,6 @@ class ImageFE(nn.Module):
             else:
                 raise NotImplementedError
             
-
         elif self.fe_type == 'resnet50':
             self.fe = torchvision.models.resnet50(pretrained=True)
             if len(self.layers) == 2:
@@ -58,9 +52,7 @@ class ImageFE(nn.Module):
                 self.last_dim = 2048
             else:
                 raise NotImplementedError
-            
-
-            
+             
         elif self.fe_type == 'squeezenet10':
             self.fe = torchvision.models.squeezenet1_0(pretrained=True)
             self.squeezenet_fc = nn.Conv2d(512, 256, kernel_size=1)
@@ -69,8 +61,6 @@ class ImageFE(nn.Module):
             self.fe = torchvision.models.squeezenet1_1(pretrained=True)
             self.squeezenet_fc = nn.Conv2d(512, 256, kernel_size=1)
             self.last_dim = 256
-        
-        
             
         elif self.fe_type == 'convnext_tiny':
             self.fe = torchvision.models.convnext_tiny(pretrained=True)
@@ -105,16 +95,13 @@ class ImageFE(nn.Module):
 
         elif self.fe_type == 'dinov2_vitl14':
             self.fe = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14')
-            self.last_dim = 2048 # 1024 (CLS) + 1024 (Patch)
+            self.last_dim = 1024 # 1024 (Patch only)
             for param in self.fe.parameters():
                 param.requires_grad = False
 
         else:
             raise NotImplementedError
         
-
-
-
 
     def forward_resnet(self, x):
         x = self.fe.conv1(x)
@@ -134,8 +121,6 @@ class ImageFE(nn.Module):
             raise NotImplementedError
         return out
     
-
-
 
     def forward_convnext(self, x):
         # 96 96 192 384 768
@@ -171,10 +156,10 @@ class ImageFE(nn.Module):
                 out.append(x)
         return out
 
+
     def forward_dino(self, x):
         # out is a dict containing 'x_norm_clstoken' and 'x_norm_patchtokens'
         out = self.fe.forward_features(x)
-        cls_token = out["x_norm_clstoken"]       # [B, 1024]
         patch_tokens = out["x_norm_patchtokens"] # [B, N, 1024]
 
         b, n, c = patch_tokens.shape
@@ -184,13 +169,8 @@ class ImageFE(nn.Module):
 
         patch_feat_map = patch_tokens.transpose(1, 2).reshape(b, c, h, w) # [B, 1024, H, W]
 
-        # Expand CLS token spatially to [B, 1024, H, W]
-        cls_feat_map = cls_token.view(b, c, 1, 1).expand(-1, -1, h, w)
+        return [patch_feat_map]
 
-        # Concat CLS and Patch tokens along channel dimension: [B, 2048, H, W]
-        fused_feat_map = torch.cat([patch_feat_map, cls_feat_map], dim=1)
-
-        return [fused_feat_map]
 
     def forward(self, x):
         if self.fe_type in ['resnet18', 'resnet34', 'resnet50']:
