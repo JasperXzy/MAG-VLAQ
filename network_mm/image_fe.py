@@ -80,10 +80,33 @@ class ImageFE(nn.Module):
             self.fe.features = nn.Sequential(*layers_list)
 
         elif self.fe_type == 'dinov2_vitl14':
+            from tools.options import parse_arguments
+            opt = parse_arguments()
             self.fe = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14')
             self.last_dim = 1024 # 1024 (Patch only)
+
+            dino_mode = getattr(opt, 'unfreeze_dino_mode', 'frozen')
+            if opt.lrdino == 0.0:
+                dino_mode = 'frozen'
+
+            # Freeze all parameters
             for param in self.fe.parameters():
                 param.requires_grad = False
+
+            # Selectively unfreeze based on mode
+            if dino_mode == 'full':
+                for param in self.fe.parameters():
+                    param.requires_grad = True
+            elif dino_mode == 'last2':
+                # Unfreeze the last two transformer blocks
+                if hasattr(self.fe, 'blocks'):
+                    for block in self.fe.blocks[-2:]:
+                        for param in block.parameters():
+                            param.requires_grad = True
+                # Unfreeze the final layer norm
+                if hasattr(self.fe, 'norm') and self.fe.norm is not None:
+                    for param in self.fe.norm.parameters():
+                        param.requires_grad = True
 
         else:
             raise NotImplementedError

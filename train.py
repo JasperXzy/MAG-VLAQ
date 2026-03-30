@@ -167,28 +167,55 @@ def main():
     # ==== model db
     if isinstance(model, DBVanilla2D):
         params_db = []
-        params_db.append({'params': model.parameters(), 'lr': args.lrdb})
+        if getattr(args, 'lrdino', 0.0) > 0.0 and args.dbimage_fe == 'dinov2_vitl14':
+            # Split parameters into DINOv2 backbone and the rest
+            dino_params = list(model.dbimage_fes.parameters())
+            base_params = [p for n, p in model.named_parameters() if not n.startswith('dbimage_fes.')]
+
+            dino_trainable = list(filter(lambda p: p.requires_grad, dino_params))
+            if len(dino_trainable) > 0:
+                params_db.append({'params': dino_trainable, 'lr': args.lrdino})
+
+            base_trainable = list(filter(lambda p: p.requires_grad, base_params))
+            if len(base_trainable) > 0:
+                params_db.append({'params': base_trainable, 'lr': args.lrdb})
+        else:
+            params_db.append({'params': filter(lambda p: p.requires_grad, model.parameters()), 'lr': args.lrdb})
 
 
     # ==== model query
     if isinstance(modelq, MM):
         params_q = []
-        params_q.append({'params': modelq.image_fe.parameters(), 'lr': args.lr})
-        params_q.append({'params': modelq.image_pool.parameters(), 'lr': args.lr})
-        params_q.append({'params': modelq.vox_fe.parameters(), 'lr': args.lrpc})
-        params_q.append({'params': modelq.vox_pool.parameters(), 'lr': args.lrpc})
-        params_q.append({'params': modelq.fuseblocktoshallow.parameters(), 'lr': args.lr})
-        params_q.append({'params': modelq.stg2fuseblock.parameters(), 'lr': args.lr})
-        params_q.append({'params': modelq.stg2fusefc.parameters(), 'lr': args.lr})
-        params_q.append({'params': modelq.image_weight, 'lr': args.lr})
-        params_q.append({'params': modelq.vox_weight, 'lr': args.lrpc})
-        params_q.append({'params': modelq.shallow_weight, 'lr': args.lr})
-        params_q.append({'params': modelq.imageorg_weight, 'lr': args.lr})
-        params_q.append({'params': modelq.voxorg_weight, 'lr': args.lr})
-        params_q.append({'params': modelq.shalloworg_weight, 'lr': args.lr})
-        params_q.append({'params': modelq.stg2image_weight, 'lr': args.lr})
-        params_q.append({'params': modelq.stg2vox_weight, 'lr': args.lr})
-        params_q.append({'params': modelq.stg2fuse_weight, 'lr': args.lr})
+
+        if getattr(args, 'lrdino', 0.0) > 0.0 and args.mm_imgfe == 'dinov2_vitl14':
+            dino_trainable = list(filter(lambda p: p.requires_grad, modelq.image_fe.parameters()))
+            if len(dino_trainable) > 0:
+                params_q.append({'params': dino_trainable, 'lr': args.lrdino})
+        else:
+            params_q.append({'params': filter(lambda p: p.requires_grad, modelq.image_fe.parameters()), 'lr': args.lr})
+
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.image_pool.parameters()), 'lr': args.lr})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.vox_fe.parameters()), 'lr': args.lrpc})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.vox_pool.parameters()), 'lr': args.lrpc})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.fuseblocktoshallow.parameters()), 'lr': args.lr})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.stg2fuseblock.parameters()), 'lr': args.lr})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.stg2fusefc.parameters()), 'lr': args.lr})
+
+        # Add the missing projection layers
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.image_proj.parameters()), 'lr': args.lr})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.vox_proj.parameters()), 'lr': args.lrpc})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.stg2image_proj.parameters()), 'lr': args.lr})
+        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.stg2vox_proj.parameters()), 'lr': args.lrpc})
+
+        params_q.append({'params': [modelq.image_weight], 'lr': args.lr})
+        params_q.append({'params': [modelq.vox_weight], 'lr': args.lrpc})
+        params_q.append({'params': [modelq.shallow_weight], 'lr': args.lr})
+        params_q.append({'params': [modelq.imageorg_weight], 'lr': args.lr})
+        params_q.append({'params': [modelq.voxorg_weight], 'lr': args.lr})
+        params_q.append({'params': [modelq.shalloworg_weight], 'lr': args.lr})
+        params_q.append({'params': [modelq.stg2image_weight], 'lr': args.lr})
+        params_q.append({'params': [modelq.stg2vox_weight], 'lr': args.lr})
+        params_q.append({'params': [modelq.stg2fuse_weight], 'lr': args.lr})
     
 
     if opt.share_qdb == True:
