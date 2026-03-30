@@ -56,11 +56,7 @@ class MM(nn.Module):
 
         img_dims = [int(e) for e in opt.mm_imgfe_planes.split('_')]
         if 'dinov2' in opt.mm_imgfe:
-            # If using DINOv2, we only have one feature map level.
-            # We wrap it in a list of length matching planes/dims to satisfy FuseBlockToShallow
             img_dims = [opt.mm_imgfe_dim for _ in range(len(planes))]
-
-        # Ensure img_dims are correctly passed to FuseBlockToShallow
         self.fuseblocktoshallow = FuseBlockToShallow(dims=[opt.mm_stg2fuse_dim for _ in range(len(planes))],
                                                      img_dims=img_dims,
                                                      vox_dims=planes,
@@ -103,10 +99,6 @@ class MM(nn.Module):
         output = []
         if 'image' in opt.output_type:
             imagefeatmap, imagefeatmaplist = self.image_fe(image)
-            if 'dinov2' in opt.mm_imgfe:
-                planes = [int(x) for x in opt.mm_voxfe_planes.split('_')]
-                imagefeatmaplist = [imagefeatmap for _ in range(len(planes))]
-
             imagefeatvec = self.image_pool(imagefeatmap)
             imagefeatvec = imagefeatvec.flatten(1)
             imagefeatvec = self.image_proj(imagefeatvec)

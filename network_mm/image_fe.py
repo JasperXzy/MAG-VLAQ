@@ -167,18 +167,26 @@ class ImageFE(nn.Module):
 
 
     def forward_dino(self, x):
-        # out is a dict containing 'x_norm_clstoken' and 'x_norm_patchtokens'
-        out = self.fe.forward_features(x)
-        patch_tokens = out["x_norm_patchtokens"] # [B, N, 1024]
+        from tools.options import parse_arguments
+        opt = parse_arguments()
+        target_blocks = [int(e) for e in opt.dino_extract_blocks.split('_')]
 
-        b, n, c = patch_tokens.shape
-        # Calculate height and width based on input image and patch size (14)
         h, w = x.shape[-2] // 14, x.shape[-1] // 14
-        assert h * w == n, f"Patch count mismatch: {h}*{w} != {n}"
 
-        patch_feat_map = patch_tokens.transpose(1, 2).reshape(b, c, h, w) # [B, 1024, H, W]
+        # Manually forward through blocks, collecting outputs at target layers
+        x_tokens = self.fe.prepare_tokens_with_masks(x)
+        outputs = []
+        for i, blk in enumerate(self.fe.blocks):
+            x_tokens = blk(x_tokens)
+            if i in target_blocks:
+                normed = self.fe.norm(x_tokens)
+                patch_tokens = normed[:, 1:]  # remove CLS token, [B, N, 1024]
+                b, n, c = patch_tokens.shape
+                assert h * w == n, f"Patch count mismatch: {h}*{w} != {n}"
+                feat_map = patch_tokens.transpose(1, 2).reshape(b, c, h, w)
+                outputs.append(feat_map)
 
-        return [patch_feat_map]
+        return outputs
 
 
     def forward(self, x):

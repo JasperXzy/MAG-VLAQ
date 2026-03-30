@@ -61,6 +61,7 @@ def parse_arguments():
     parser.add_argument("--lrdb", type=float, default=1e-5)
     parser.add_argument("--lrdino", type=float, default=0.0)
     parser.add_argument("--unfreeze_dino_mode", type=str, default="frozen", choices=["frozen", "last2", "full"])
+    parser.add_argument("--dino_extract_blocks", type=str, default="7_15_23", help="Transformer block indices to extract multi-layer features from DINOv2")
     parser.add_argument('--resize', type=int, default=[256,256], nargs=2, help="Resizing shape for images (HxW).") # database transform
     parser.add_argument('--color_jitter', type=float, default=0) # query transform
     parser.add_argument('--quant_size', type=float, default=2) # query transform
