@@ -117,12 +117,24 @@ def kitti360_collate_fn(batch):
     query_pc = [e[0]['query_pc'] for e in batch]
     query_bev = torch.stack([e[0]['query_bev'] for e in batch])
     query_sph = torch.stack([e[0]['query_sph'] for e in batch])
-    coords = ME.utils.batched_coordinates(query_pc)
-    batchids = coords[:,:1]
-    coords = coords[:,1:]
-    coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
-    coords = torch.cat([batchids, coords], dim=1)
+
+    # Build raw float coords and apply rotation BEFORE integer quantization
+    query_pc_float = [torch.from_numpy(p).float() if isinstance(p, np.ndarray) else p.float() for p in query_pc]
+    raw_coords = torch.cat(query_pc_float, dim=0)  # [N_total, 3] float
+    point_counts = [len(p) for p in query_pc_float]
+    batch_ids = torch.cat([torch.full((n, 1), i, dtype=torch.int32) for i, n in enumerate(point_counts)])
+
+    # Apply rotation to raw float coords (preserves sub-voxel precision)
+    raw_coords_rotated = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(raw_coords)
+    if isinstance(raw_coords_rotated, np.ndarray):
+        raw_coords_rotated = torch.from_numpy(raw_coords_rotated).float()
+
+    # For ME: integer coords from rotated float
+    coords = torch.cat([batch_ids, raw_coords_rotated.int()], dim=1)
     feats = torch.ones([coords.shape[0], 1]).float()
+
+    # For Utonia: real float coords (rotated) + separately quantized grid coords
+    utonia_offset = torch.cumsum(torch.tensor(point_counts), dim=0)
 
 
     triplets_local_indexes = torch.cat([e[1][None] for e in batch])
@@ -143,6 +155,10 @@ def kitti360_collate_fn(batch):
         # 'negative_db_maps': negative_db_maps,
         'db_map': db_map,
         'db_eastnorth': db_eastnorth,
+        'utonia_coord': raw_coords_rotated.float(),    # real XYZ in float (rotated)
+        'utonia_grid_coord': raw_coords_rotated.int(), # quantized after rotation
+        'utonia_feat': feats,
+        'utonia_offset': utonia_offset,
     }
     # return images, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
     return output_dict, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
@@ -198,12 +214,19 @@ def kitti360_collate_fn_cache_q(batch):
     query_pc = [e[0]['query_pc'] for e in batch]
     query_bev = torch.stack([e[0]['query_bev'] for e in batch])
     query_sph = torch.stack([e[0]['query_sph'] for e in batch])
-    coords = ME.utils.batched_coordinates(query_pc)
-    batchids = coords[:,:1]
-    coords = coords[:,1:]
-    # coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
-    coords = torch.cat([batchids, coords], dim=1)
+
+    # Build raw float coords (no rotation at inference)
+    query_pc_float = [torch.from_numpy(p).float() if isinstance(p, np.ndarray) else p.float() for p in query_pc]
+    raw_coords = torch.cat(query_pc_float, dim=0)  # [N_total, 3] float
+    point_counts = [len(p) for p in query_pc_float]
+    batch_ids = torch.cat([torch.full((n, 1), i, dtype=torch.int32) for i, n in enumerate(point_counts)])
+
+    # For ME: integer coords
+    coords = torch.cat([batch_ids, raw_coords.int()], dim=1)
     feats = torch.ones([coords.shape[0], 1]).float()
+
+    # For Utonia
+    utonia_offset = torch.cumsum(torch.tensor(point_counts), dim=0)
 
 
     db_map = torch.stack([e[0]['db_map'] for e in batch])
@@ -224,6 +247,10 @@ def kitti360_collate_fn_cache_q(batch):
         # 'negative_db_maps': negative_db_maps,
         'db_map': db_map,
         'query_eastnorth': query_eastnorth,
+        'utonia_coord': raw_coords.float(),         # real XYZ in float
+        'utonia_grid_coord': raw_coords.int(),      # quantized
+        'utonia_feat': feats,
+        'utonia_offset': utonia_offset,
     }
     return output_dict, indices
 

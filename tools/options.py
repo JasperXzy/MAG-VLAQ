@@ -108,6 +108,7 @@ def parse_arguments():
     parser.add_argument('--mm_imgfe_layers', type=str, default='2_2_2')
     parser.add_argument('--mm_imgfe_planes', type=str, default='64_128_256')
     parser.add_argument('--mm_imgfe_dim', type=int, default=256)
+    parser.add_argument('--mm_voxfe_arch', type=str, default='minkfpn') # minkfpn or utonia
     parser.add_argument('--mm_voxfe_layers', type=str, default='1_1_1')
     parser.add_argument('--mm_voxfe_planes', type=str, default='64_128_256')  
     parser.add_argument('--mm_voxfe_ntd', type=int, default=0)

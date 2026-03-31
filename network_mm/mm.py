@@ -20,7 +20,8 @@ from network_mm.fuse_block_toshallow import FuseBlockToShallow
 from network_mm.stage2fuse_blockadd import Stage2FuseBlockAdd
 
 from models.minkfpn import MinkFPN
-from layers.pooling import MinkGeM 
+from network_mm.utonia_fe import UtoniaFE
+from layers.pooling import MinkGeM
 from layers.eca_block import ECABasicBlock
 
 import MinkowskiEngine as ME
@@ -49,14 +50,22 @@ class MM(nn.Module):
         self.image_pool = GeM()
         planes = [int(x) for x in opt.mm_voxfe_planes.split('_')]
         layers = [int(x) for x in opt.mm_voxfe_layers.split('_')]
-        self.vox_fe = MinkFPN(in_channels=1, out_channels=planes[-1],
-                              planes=planes, layers=layers,
-                              num_top_down=opt.mm_voxfe_ntd, conv0_kernel_size=5, block=ECABasicBlock)
+        self.voxfe_arch = getattr(opt, 'mm_voxfe_arch', 'minkfpn')
+        if self.voxfe_arch == 'utonia':
+            self.vox_fe = UtoniaFE(in_channels=1, out_channels=planes[-1], planes=planes)
+        else:
+            self.vox_fe = MinkFPN(in_channels=1, out_channels=planes[-1],
+                                  planes=planes, layers=layers,
+                                  num_top_down=opt.mm_voxfe_ntd, conv0_kernel_size=5, block=ECABasicBlock)
         self.vox_pool = MinkGeM()
 
         img_dims = [int(e) for e in opt.mm_imgfe_planes.split('_')]
         if 'dinov2' in opt.mm_imgfe:
+            # If using DINOv2, we only have one feature map level.
+            # We wrap it in a list of length matching planes/dims to satisfy FuseBlockToShallow
             img_dims = [opt.mm_imgfe_dim for _ in range(len(planes))]
+
+        # Ensure img_dims are correctly passed to FuseBlockToShallow
         self.fuseblocktoshallow = FuseBlockToShallow(dims=[opt.mm_stg2fuse_dim for _ in range(len(planes))],
                                                      img_dims=img_dims,
                                                      vox_dims=planes,
@@ -99,6 +108,10 @@ class MM(nn.Module):
         output = []
         if 'image' in opt.output_type:
             imagefeatmap, imagefeatmaplist = self.image_fe(image)
+            if 'dinov2' in opt.mm_imgfe:
+                planes = [int(x) for x in opt.mm_voxfe_planes.split('_')]
+                imagefeatmaplist = [imagefeatmap for _ in range(len(planes))]
+
             imagefeatvec = self.image_pool(imagefeatmap)
             imagefeatvec = imagefeatvec.flatten(1)
             imagefeatvec = self.image_proj(imagefeatvec)
@@ -107,8 +120,17 @@ class MM(nn.Module):
             imagefeatvec_org = imagefeatvec
             output.append(imagefeatvec * self.image_weight)
         if 'vox' in opt.output_type:
-            sptensor = ME.SparseTensor(features=data_dict['features'], coordinates=data_dict['coords'].int())
-            voxfeatmap, voxfeatmaplist = self.vox_fe(sptensor)
+            if self.voxfe_arch == 'utonia':
+                utonia_dict = {
+                    'coord': data_dict['utonia_coord'],
+                    'grid_coord': data_dict['utonia_grid_coord'],
+                    'feat': data_dict['utonia_feat'],
+                    'offset': data_dict['utonia_offset'],
+                }
+                voxfeatmap, voxfeatmaplist = self.vox_fe(utonia_dict)
+            else:
+                sptensor = ME.SparseTensor(features=data_dict['features'], coordinates=data_dict['coords'].int())
+                voxfeatmap, voxfeatmaplist = self.vox_fe(sptensor)
             voxfeatvec = self.vox_pool(voxfeatmap)
             voxfeatvec = self.vox_proj(voxfeatvec)
             if opt.output_l2 is True:
