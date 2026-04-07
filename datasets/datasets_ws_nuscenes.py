@@ -17,7 +17,7 @@ import random
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as TVT
 from viz_lidar import viz_lidar_open3d
-import MinkowskiEngine as ME
+from layers.sparse_utils import batched_coordinates, sparse_quantize
 import copy
 import matplotlib.pyplot as plt
 import utm
@@ -136,7 +136,7 @@ def nuscenes_collate_fn(batch):
     # positive_db_map = torch.stack([e[0]['positive_db_map'] for e in batch]) 
     # negative_db_maps = torch.stack([e[0]['negative_db_maps'] for e in batch]) 
     # ---- batch augmentation (quantize is in __getitem__)
-    coords = ME.utils.batched_coordinates(query_pc)
+    coords = batched_coordinates(query_pc)
     batchids = coords[:,:1]
     coords = coords[:,1:]
     coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
@@ -223,7 +223,7 @@ def nuscenes_collate_fn_cache_q(batch):
     query_sph = torch.stack([e[0]['query_sph'] for e in batch])
     query_pc = [e[0]['query_pc'] for e in batch]
     # ---- batch augmentation (quantize is in __getitem__)
-    coords = ME.utils.batched_coordinates(query_pc)
+    coords = batched_coordinates(query_pc)
     batchids = coords[:,:1]
     coords = coords[:,1:]
     coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
@@ -571,7 +571,7 @@ def load_sensordata_from_sampletoken(nusc, sample_token):
             pcpath[-2] += f'_voxel{1}'
             pcpath = '/'.join(pcpath)
             pc = np.load(pcpath, allow_pickle=True)
-            pc = ME.utils.sparse_quantize(coordinates=pc, quantization_size=opt.quant_size)
+            pc = sparse_quantize(coordinates=pc, quantization_size=opt.quant_size)
             sensordatas['LIDAR_TOP'] = pc
             
             # load sph

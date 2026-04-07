@@ -17,7 +17,6 @@ import random
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as TVT
 from viz_lidar import viz_lidar_open3d
-import MinkowskiEngine as ME
 import copy
 import matplotlib.pyplot as plt
 import utm
@@ -135,6 +134,7 @@ def kitti360_collate_fn(batch):
 
     # For Utonia: real float coords (rotated) + separately quantized grid coords
     utonia_offset = torch.cumsum(torch.tensor(point_counts), dim=0)
+    utonia_feat = raw_coords_rotated.float()  # [N, 3] xyz only, centering done in UtoniaFE.forward
 
 
     triplets_local_indexes = torch.cat([e[1][None] for e in batch])
@@ -157,7 +157,7 @@ def kitti360_collate_fn(batch):
         'db_eastnorth': db_eastnorth,
         'utonia_coord': raw_coords_rotated.float(),    # real XYZ in float (rotated)
         'utonia_grid_coord': raw_coords_rotated.int(), # quantized after rotation
-        'utonia_feat': feats,
+        'utonia_feat': utonia_feat,                    # [N, 3]: xyz coordinates
         'utonia_offset': utonia_offset,
     }
     # return images, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
@@ -227,6 +227,7 @@ def kitti360_collate_fn_cache_q(batch):
 
     # For Utonia
     utonia_offset = torch.cumsum(torch.tensor(point_counts), dim=0)
+    utonia_feat = raw_coords.float()  # [N, 3] xyz only, centering done in UtoniaFE.forward
 
 
     db_map = torch.stack([e[0]['db_map'] for e in batch])
@@ -249,7 +250,7 @@ def kitti360_collate_fn_cache_q(batch):
         'query_eastnorth': query_eastnorth,
         'utonia_coord': raw_coords.float(),         # real XYZ in float
         'utonia_grid_coord': raw_coords.int(),      # quantized
-        'utonia_feat': feats,
+        'utonia_feat': utonia_feat,                 # [N, 3]: xyz coordinates
         'utonia_offset': utonia_offset,
     }
     return output_dict, indices

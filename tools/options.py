@@ -9,7 +9,7 @@ import argparse
 import time
 import matplotlib.pyplot as plt
 plt.switch_backend('agg')
-import MinkowskiEngine as ME
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Benchmarking Visual Geolocalization",
@@ -18,7 +18,7 @@ def parse_arguments():
     parser.add_argument("--cuda", type=str, default="0")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--machine", type=str, default='sijiewan')
+    parser.add_argument("--machine", type=str, default='5080')
     parser.add_argument("--dataset", type=str, default='kitti360') # kitti360  nuscenes  
     parser.add_argument("--datasets_folder", type=str, 
                         default=''
@@ -62,6 +62,10 @@ def parse_arguments():
     parser.add_argument("--lrdino", type=float, default=0.0)
     parser.add_argument("--unfreeze_dino_mode", type=str, default="frozen", choices=["frozen", "last2", "full"])
     parser.add_argument("--dino_extract_blocks", type=str, default="7_15_23", help="Transformer block indices to extract multi-layer features from DINOv2")
+    parser.add_argument("--utonia_pretrained", type=str, default="none", choices=["none", "utonia"], help="Load Utonia pretrained weights")
+    parser.add_argument("--unfreeze_utonia_mode", type=str, default="frozen", choices=["frozen", "last1", "full"], help="Utonia freeze mode: frozen=all frozen, last1=stage4 only (~40M/29%%), full=all (~137M)")
+    parser.add_argument("--lrutonia", type=float, default=0.0, help="Learning rate for unfrozen Utonia parameters")
+    parser.add_argument("--utonia_extract_stages", type=str, default="1_2_3", help="PTv3 encoder stages to extract for ODE fusion")
     parser.add_argument('--resize', type=int, default=[256,256], nargs=2, help="Resizing shape for images (HxW).") # database transform
     parser.add_argument('--color_jitter', type=float, default=0) # query transform
     parser.add_argument('--quant_size', type=float, default=2) # query transform
@@ -275,12 +279,12 @@ def parse_arguments():
         elif args.dataset == 'nuscenes': 
             args.dataroot = '/mnt/sda/ZhengyiXu/datasets/radar/nuscenes'
         args.num_workers = 8
-    elif args.machine == '4500':
+    elif args.machine == '5080':
         if args.dataset == 'kitti360': 
-            args.dataroot = '/mnt/sda/ZhengyiXu/datasets/cmvpr/kitti360/KITTI-360'
+            args.dataroot = '/home/jasperxzy/Datasets/cmvpr/kitti360/KITTI-360'
         elif args.dataset == 'nuscenes': 
-            args.dataroot = '/mnt/sda/ZhengyiXu/datasets/radar/nuscenes'
-        args.num_workers = 8
+            args.dataroot = '/home/jasperxzy/Datasets/radar/nuscenes'
+        args.num_workers = 16
     elif args.machine == "sijiewan":
         if args.dataset == 'kitti360': 
             args.dataroot = '/mnt/sda/ZhengyiXu/datasets/cmvpr/kitti360/KITTI-360'

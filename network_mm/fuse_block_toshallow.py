@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from network_mm.diff_block import DiffBlock
-import MinkowskiEngine as ME
+from layers.sparse_utils import sparse_global_avg_pool
 
 from tools.options import parse_arguments
 opt = parse_arguments()
@@ -83,7 +83,7 @@ class FuseBlockToShallow(nn.Module):
         assert len(imagemaplist) == len(self.dims)
 
         imageveclist = [F.adaptive_avg_pool2d(e, output_size=1).flatten(1) for e in imagemaplist] 
-        voxveclist = [ME.MinkowskiGlobalPooling()(e).F for e in voxmaplist]
+        voxveclist = [sparse_global_avg_pool(e) for e in voxmaplist]
 
         if 'cde' in opt.diff_type:
             # ==== cde

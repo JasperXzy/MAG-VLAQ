@@ -9,7 +9,7 @@ import torchvision.models as TVM
 
 
 
-import MinkowskiEngine as ME
+from layers.sparse_utils import SimpleSparse, sparse_broadcast_add, sparse_broadcast_mul, sparse_global_avg_pool
 from layers.eca_block import ECABasicBlock
 from layers.pooling import MinkGeM
 
@@ -23,21 +23,14 @@ opt = parse_arguments()
 
 
 
-def ME_broadcast_add(sptensor, vec):
-    assert isinstance(sptensor, ME.SparseTensor)
-    assert isinstance(vec, torch.Tensor)
-    vec_sp = ME.SparseTensor(vec, coordinate_map_key=sptensor.coordinate_map_key,
-                             coordinate_manager=sptensor.coordinate_manager)
-    output = ME.MinkowskiBroadcastAddition()(sptensor, vec_sp)
-    return output
+class SparseLinear(nn.Module):
+    """Wraps nn.Linear to operate on SimpleSparse (pointwise linear transform)."""
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_features)
 
-def ME_broadcast_mul(sptensor, vec):
-    assert isinstance(sptensor, ME.SparseTensor)
-    assert isinstance(vec, torch.Tensor)
-    vec_sp = ME.SparseTensor(vec, coordinate_map_key=sptensor.coordinate_map_key,
-                             coordinate_manager=sptensor.coordinate_manager)
-    output = ME.MinkowskiBroadcastMultiplication()(sptensor, vec_sp)
-    return output
+    def forward(self, x):
+        return SimpleSparse(features=self.linear(x.F), coordinates=x.C)
 
 
 def select_act(act):
@@ -158,8 +151,7 @@ class Stage2FuseBlockAdd(nn.Module):
                     nn.Linear(fusedim, voxdim)))
                 self.projsimgfuse.append(nn.Sequential(
                     nn.Conv2d(imgdim, fusedim, kernel_size=1)))
-                self.projsvoxfuse.append(nn.Sequential(
-                    ME.MinkowskiConvolution(voxdim, fusedim, kernel_size=1, dimension=3)))
+                self.projsvoxfuse.append(SparseLinear(voxdim, fusedim))
             else:
                 self.projsfusebev.append(nn.Identity())
                 self.projsfuseimg.append(nn.Identity())
@@ -194,7 +186,7 @@ class Stage2FuseBlockAdd(nn.Module):
                 fusevec_img = projfuseimg(fusevec)
                 fusevec_vox = projfusevox(fusevec)
                 imgmap = imgmap + fusevec_img.unsqueeze(-1).unsqueeze(-1)
-                voxmap = ME_broadcast_add(voxmap, fusevec_vox)
+                voxmap = sparse_broadcast_add(voxmap, fusevec_vox)
 
                 imgmap = ffnimg(imgmap)
                 # bevmap = ffnbev(bevmap)
@@ -208,8 +200,8 @@ class Stage2FuseBlockAdd(nn.Module):
                     imgmap_fuse = projimgfuse(imgmap)
                     voxmap_fuse = projvoxfuse(voxmap)
                     imgvec_fuse = F.adaptive_avg_pool2d(imgmap_fuse, [1,1]).squeeze(-1).squeeze(-1)
-                    voxvec_fuse = ME.MinkowskiGlobalAvgPooling()(voxmap_fuse) 
-                    fusevec = fusevec + imgvec_fuse + voxvec_fuse.F
+                    voxvec_fuse = sparse_global_avg_pool(voxmap_fuse)
+                    fusevec = fusevec + imgvec_fuse + voxvec_fuse
                     fusevec = ffnfuse(fusevec)
 
 

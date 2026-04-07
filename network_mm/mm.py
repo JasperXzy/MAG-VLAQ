@@ -19,12 +19,8 @@ from network_mm.image_pooling import GeM
 from network_mm.fuse_block_toshallow import FuseBlockToShallow
 from network_mm.stage2fuse_blockadd import Stage2FuseBlockAdd
 
-from models.minkfpn import MinkFPN
 from network_mm.utonia_fe import UtoniaFE
 from layers.pooling import MinkGeM
-from layers.eca_block import ECABasicBlock
-
-import MinkowskiEngine as ME
 
 from tools.options import parse_arguments
 opt = parse_arguments()
@@ -52,11 +48,14 @@ class MM(nn.Module):
         layers = [int(x) for x in opt.mm_voxfe_layers.split('_')]
         self.voxfe_arch = getattr(opt, 'mm_voxfe_arch', 'minkfpn')
         if self.voxfe_arch == 'utonia':
-            self.vox_fe = UtoniaFE(in_channels=1, out_channels=planes[-1], planes=planes)
+            self.vox_fe = UtoniaFE(out_channels=planes[-1], planes=planes)
         else:
+            # Legacy MinkFPN path — requires MinkowskiEngine
+            from models.minkfpn import MinkFPN
+            from models_minkloc.eca_block import ECABasicBlock as _ECABlock
             self.vox_fe = MinkFPN(in_channels=1, out_channels=planes[-1],
                                   planes=planes, layers=layers,
-                                  num_top_down=opt.mm_voxfe_ntd, conv0_kernel_size=5, block=ECABasicBlock)
+                                  num_top_down=opt.mm_voxfe_ntd, conv0_kernel_size=5, block=_ECABlock)
         self.vox_pool = MinkGeM()
 
         img_dims = [int(e) for e in opt.mm_imgfe_planes.split('_')]
@@ -129,6 +128,8 @@ class MM(nn.Module):
                 }
                 voxfeatmap, voxfeatmaplist = self.vox_fe(utonia_dict)
             else:
+                # Legacy MinkFPN path — requires MinkowskiEngine
+                import MinkowskiEngine as ME
                 sptensor = ME.SparseTensor(features=data_dict['features'], coordinates=data_dict['coords'].int())
                 voxfeatmap, voxfeatmaplist = self.vox_fe(sptensor)
             voxfeatvec = self.vox_pool(voxfeatmap)

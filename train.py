@@ -195,7 +195,16 @@ def main():
             params_q.append({'params': filter(lambda p: p.requires_grad, modelq.image_fe.parameters()), 'lr': args.lr})
 
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq.image_pool.parameters()), 'lr': args.lr})
-        params_q.append({'params': filter(lambda p: p.requires_grad, modelq.vox_fe.parameters()), 'lr': args.lrpc})
+        if getattr(args, 'lrutonia', 0.0) > 0.0 and getattr(args, 'mm_voxfe_arch', 'minkfpn') == 'utonia':
+            # Separate Utonia pretrained params (with lrutonia) from projection params (with lrpc)
+            utonia_ptv3_trainable = list(filter(lambda p: p.requires_grad, modelq.vox_fe.ptv3.parameters()))
+            utonia_proj_trainable = list(filter(lambda p: p.requires_grad, modelq.vox_fe.projs.parameters()))
+            if len(utonia_ptv3_trainable) > 0:
+                params_q.append({'params': utonia_ptv3_trainable, 'lr': args.lrutonia})
+            if len(utonia_proj_trainable) > 0:
+                params_q.append({'params': utonia_proj_trainable, 'lr': args.lrpc})
+        else:
+            params_q.append({'params': filter(lambda p: p.requires_grad, modelq.vox_fe.parameters()), 'lr': args.lrpc})
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq.vox_pool.parameters()), 'lr': args.lrpc})
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq.fuseblocktoshallow.parameters()), 'lr': args.lr})
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq.stg2fuseblock.parameters()), 'lr': args.lr})

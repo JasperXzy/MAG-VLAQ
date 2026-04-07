@@ -17,7 +17,7 @@ import random
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as TVT
 from viz_lidar import viz_lidar_open3d
-import MinkowskiEngine as ME
+from layers.sparse_utils import batched_coordinates, sparse_quantize
 import copy
 import matplotlib.pyplot as plt
 
@@ -78,7 +78,7 @@ def collate_fn(batch):
     if opt.modelq in ['mm','minklocppbev','adafusionbev']:
         coords = torch.ones(1)
     else:
-        coords = ME.utils.batched_coordinates(pcs)
+        coords = batched_coordinates(pcs)
         batchids = coords[:,:1]
         coords = coords[:,1:]
         coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
@@ -134,7 +134,7 @@ def collate_fn_cache_q(batch):
     if opt.modelq in ['mm','minklocppbev','adafusionbev']:
         coords = torch.ones(1)
     else:
-        coords = ME.utils.batched_coordinates(pcs)
+        coords = batched_coordinates(pcs)
         batchids = coords[:,:1]
         coords = coords[:,1:]
         coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
@@ -266,7 +266,7 @@ def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
             PCRandomFlip([0.25, 0.25, 0.]),
         ])
         pc = tfpc(pc)
-        pc = ME.utils.sparse_quantize(coordinates=pc, quantization_size=opt.quant_size)
+        pc = sparse_quantize(coordinates=pc, quantization_size=opt.quant_size)
 
 
 
