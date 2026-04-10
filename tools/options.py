@@ -307,7 +307,10 @@ def parse_arguments():
 
 
     #####################################
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
+    # When launched via torchrun (DDP), do NOT override CUDA_VISIBLE_DEVICES;
+    # torchrun assigns GPUs through LOCAL_RANK.
+    if 'RANK' not in os.environ:
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
 
 
     args.exp_name = ''
