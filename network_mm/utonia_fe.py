@@ -21,10 +21,10 @@ class UtoniaFE(nn.Module):
     Wrapper for Utonia PointTransformerV3 as Feature Extractor.
     Supports loading pretrained weights and selective freezing.
 
-    Input: 3-channel features (xyz coordinates).
-    For pretrained models (originally 9ch: xyz+rgb+normal), the embedding
-    layer is surgically adapted to 3ch by retaining the xyz columns of
-    the pretrained weight matrix.
+    Input: 9-channel features (xyz + rgb + normal), matching Utonia's
+    pretrained interface. RGB is projected from 2D camera images;
+    points without valid projection use zeros (handled by Utonia's
+    Causal Modality Blinding).
     """
     def __init__(self, out_channels=256, planes=(64, 128, 256)):
         super().__init__()
@@ -46,14 +46,14 @@ class UtoniaFE(nn.Module):
             pretrained_config["enc_mode"] = True
             pretrained_config["traceable"] = True
             pretrained_config["enable_flash"] = True
-            # Reduce patch size to lower attention memory: O(patch_size^2)
-            pretrained_config["enc_patch_size"] = [1024 for _ in range(len(pretrained_config.get("enc_patch_size", [1024]*5)))]
-            # Set drop_path=0 for stable fine-tuning (pretrained default is 0.3)
-            pretrained_config["drop_path"] = 0.0
+            # Progressive patch size: local attention in shallow stages, global in deep stages
+            pretrained_config["enc_patch_size"] = [256, 256, 512, 512, 1024]
+            # Moderate drop_path for fine-tuning regularization (pretrained default is 0.3)
+            pretrained_config["drop_path"] = 0.1
 
             self.ptv3 = PointTransformerV3(**pretrained_config)
 
-            # Load pretrained weights (full, including original embedding)
+            # Load pretrained weights (full, including original 9ch embedding)
             model_state = self.ptv3.state_dict()
             pretrained_state = ckpt["state_dict"]
             filtered_state = {k: v for k, v in pretrained_state.items()
@@ -62,27 +62,13 @@ class UtoniaFE(nn.Module):
             logging.info(f"Utonia pretrained loaded. Loaded: {len(filtered_state)}/{len(pretrained_state)} keys, "
                          f"Skipped (shape mismatch or missing): {len(pretrained_state) - len(filtered_state)}")
 
-            # Adapt embedding: pretrained in_channels (e.g. 9: xyz+rgb+normal) → 3 (xyz only)
-            # Retain only the first 3 columns (xyz) of the pretrained embedding weight
-            old_linear = self.ptv3.embedding.stem.linear  # nn.Linear(9, embed_ch)
-            pretrained_in_ch = old_linear.in_features
-            embed_ch = old_linear.out_features
-            new_linear = nn.Linear(3, embed_ch)
-            with torch.no_grad():
-                new_linear.weight.copy_(old_linear.weight[:, :3])
-                new_linear.bias.copy_(old_linear.bias)
-            self.ptv3.embedding.stem.linear = new_linear
-            self.ptv3.embedding.in_channels = 3
-            logging.info(f"Utonia embedding adapted: {pretrained_in_ch}ch → 3ch (xyz only), "
-                         f"retained xyz columns of pretrained weight [{embed_ch} output dims]")
-
             # Read enc_channels from pretrained config
             enc_channels = list(pretrained_config["enc_channels"])
         else:
-            # From scratch: 3ch input (xyz coordinates)
+            # From scratch: 9ch input (xyz + rgb + normal)
             enc_channels = [48, 96, 192, 384, 512]
             self.ptv3 = PointTransformerV3(
-                in_channels=3,
+                in_channels=9,
                 order=["z", "z-trans", "hilbert", "hilbert-trans"],
                 stride=(2, 2, 2, 2),
                 enc_depths=(2, 2, 2, 6, 2),
@@ -108,10 +94,6 @@ class UtoniaFE(nn.Module):
 
         # Freeze/unfreeze logic
         if pretrained_name != 'none':
-            lrutonia = getattr(opt, 'lrutonia', 0.0)
-            if lrutonia == 0.0:
-                freeze_mode = 'frozen'
-
             # Freeze all first
             for param in self.ptv3.parameters():
                 param.requires_grad = False
@@ -144,20 +126,62 @@ class UtoniaFE(nn.Module):
             nn.Linear(self.utonia_channels[i], planes[i]) for i in range(len(planes))
         ])
 
+    @staticmethod
+    def _estimate_normals(coords, offset, k=20, chunk_size=2048):
+        """Estimate per-point normals via PCA on k-nearest neighbors.
+        Uses chunked distance computation to avoid O(N^2) memory.
+        Args:
+            coords: FloatTensor [N, 3]
+            offset: LongTensor [B] — cumulative point counts
+            k: number of neighbors for PCA
+            chunk_size: process this many query points at a time
+        Returns:
+            normals: FloatTensor [N, 3]
+        """
+        normals = torch.zeros_like(coords)
+        start = 0
+        for b in range(len(offset)):
+            end = offset[b].item()
+            pts = coords[start:end]  # [Nb, 3]
+            n_pts = pts.shape[0]
+            k_actual = min(k, n_pts)
+
+            # Chunked KNN to avoid [Nb, Nb] distance matrix
+            all_knn_idx = torch.empty(n_pts, k_actual, dtype=torch.long)
+            for c_start in range(0, n_pts, chunk_size):
+                c_end = min(c_start + chunk_size, n_pts)
+                dists = torch.cdist(pts[c_start:c_end], pts)  # [chunk, Nb]
+                _, idx = dists.topk(k_actual, dim=1, largest=False)
+                all_knn_idx[c_start:c_end] = idx
+
+            # PCA: compute covariance of each neighborhood
+            neighbors = pts[all_knn_idx]  # [Nb, k, 3]
+            centroid = neighbors.mean(dim=1, keepdim=True)  # [Nb, 1, 3]
+            centered = neighbors - centroid  # [Nb, k, 3]
+            cov = torch.bmm(centered.transpose(1, 2), centered)  # [Nb, 3, 3]
+
+            # Smallest eigenvector = normal direction
+            eigenvalues, eigenvectors = torch.linalg.eigh(cov)  # sorted ascending
+            normal = eigenvectors[:, :, 0]  # [Nb, 3] — smallest eigenvalue
+
+            normals[start:end] = normal
+            start = end
+        return normals
+
     def forward(self, data_dict):
         """
         data_dict must contain:
         - coord: FloatTensor of [N, 3]
         - grid_coord: IntTensor of [N, 3]
-        - feat: FloatTensor of [N, 3] (raw xyz, centered here before embedding)
+        - feat: FloatTensor of [N, 3] (unused, overwritten internally)
+        - rgb: FloatTensor of [N, 3] (projected RGB, 0-1; zeros where unavailable)
         - offset: IntTensor or LongTensor of [B]
         """
-        # 1. Per-batch centering of coord, grid_coord, and feat
-        #    feat = xyz coordinates, centered to match the pretrained data distribution
-        #    where feat[:3] == coord (both centered relative coords)
+        # 1. Per-batch centering of coord and grid_coord
         grid_coord = data_dict['grid_coord'].clone()
         coord = data_dict['coord'].clone()
         offset = data_dict['offset']
+        rgb = data_dict.get('rgb', torch.zeros_like(coord))
         batch = offset2batch(offset)
 
         for b in range(len(offset)):
@@ -167,11 +191,17 @@ class UtoniaFE(nn.Module):
                 grid_coord[mask] = grid_coord[mask] - grid_min
                 coord_min = coord[mask].min(dim=0)[0]
                 coord[mask] = coord[mask] - coord_min
+                # Normalize to unit range to match pretrained indoor-scale distribution
+                coord_range = coord[mask].max(dim=0)[0].clamp(min=1e-6)
+                coord[mask] = coord[mask] / coord_range.max()
+
+        # 2. Estimate normals from centered coordinates
+        normals = self._estimate_normals(coord, offset, k=20)
 
         data_dict['grid_coord'] = grid_coord
         data_dict['coord'] = coord
-        # Use centered coord as feat: consistent with pretrained PTv3 where feat[:3] == coord
-        data_dict['feat'] = coord.clone()
+        # 9ch feat: xyz (centered+normalized) + rgb + normals
+        data_dict['feat'] = torch.cat([coord, rgb, normals], dim=1)
         point = Point(data_dict)
 
         # 2. Forward pass through PTv3 encoder

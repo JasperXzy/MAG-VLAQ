@@ -2,6 +2,10 @@
 import os
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message=".*xFormers is available.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*is_fx_tracing.*")
+import logging
+for _logger_name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection", "hpack"):
+    logging.getLogger(_logger_name).setLevel(logging.WARNING)
 os.environ["OMP_NUM_THREADS"] = '16'
 
 import torch
@@ -62,7 +66,7 @@ def parse_arguments():
     parser.add_argument("--lrdino", type=float, default=0.0)
     parser.add_argument("--unfreeze_dino_mode", type=str, default="frozen", choices=["frozen", "last2", "full"])
     parser.add_argument("--dino_extract_blocks", type=str, default="7_15_23", help="Transformer block indices to extract multi-layer features from DINOv2")
-    parser.add_argument("--utonia_pretrained", type=str, default="none", choices=["none", "utonia"], help="Load Utonia pretrained weights")
+    parser.add_argument("--utonia_pretrained", type=str, default="none", help="Load Utonia pretrained weights: 'none', 'utonia' (HF download), or local file path e.g. ~/.cache/utonia/ckpt/utonia.pth")
     parser.add_argument("--unfreeze_utonia_mode", type=str, default="frozen", choices=["frozen", "last1", "full"], help="Utonia freeze mode: frozen=all frozen, last1=stage4 only (~40M/29%%), full=all (~137M)")
     parser.add_argument("--lrutonia", type=float, default=0.0, help="Learning rate for unfrozen Utonia parameters")
     parser.add_argument("--utonia_extract_stages", type=str, default="1_2_3", help="PTv3 encoder stages to extract for ODE fusion")

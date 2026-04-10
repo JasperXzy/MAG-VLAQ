@@ -124,6 +124,7 @@ class MM(nn.Module):
                     'coord': data_dict['utonia_coord'],
                     'grid_coord': data_dict['utonia_grid_coord'],
                     'feat': data_dict['utonia_feat'],
+                    'rgb': data_dict['utonia_rgb'],
                     'offset': data_dict['utonia_offset'],
                 }
                 voxfeatmap, voxfeatmaplist = self.vox_fe(utonia_dict)

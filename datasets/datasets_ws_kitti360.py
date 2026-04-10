@@ -32,6 +32,8 @@ from pc_augmentation import (
 )
 
 
+from datasets.kitti360_calib import get_calibration, colorize_points
+
 from tools.options import parse_arguments
 opt = parse_arguments()
 
@@ -136,6 +138,11 @@ def kitti360_collate_fn(batch):
     utonia_offset = torch.cumsum(torch.tensor(point_counts), dim=0)
     utonia_feat = raw_coords_rotated.float()  # [N, 3] xyz only, centering done in UtoniaFE.forward
 
+    # Per-point RGB from fisheye camera projection
+    query_pc_rgb = [e[0]['query_pc_rgb'] for e in batch]
+    query_pc_rgb_float = [torch.from_numpy(r).float() if isinstance(r, np.ndarray) else r.float() for r in query_pc_rgb]
+    utonia_rgb = torch.cat(query_pc_rgb_float, dim=0)  # [N_total, 3]
+
 
     triplets_local_indexes = torch.cat([e[1][None] for e in batch])
     triplets_global_indexes = torch.cat([e[2][None] for e in batch])
@@ -158,6 +165,7 @@ def kitti360_collate_fn(batch):
         'utonia_coord': raw_coords_rotated.float(),    # real XYZ in float (rotated)
         'utonia_grid_coord': raw_coords_rotated.int(), # quantized after rotation
         'utonia_feat': utonia_feat,                    # [N, 3]: xyz coordinates
+        'utonia_rgb': utonia_rgb,                      # [N, 3]: projected RGB (0-1)
         'utonia_offset': utonia_offset,
     }
     # return images, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
@@ -229,6 +237,11 @@ def kitti360_collate_fn_cache_q(batch):
     utonia_offset = torch.cumsum(torch.tensor(point_counts), dim=0)
     utonia_feat = raw_coords.float()  # [N, 3] xyz only, centering done in UtoniaFE.forward
 
+    # Per-point RGB from fisheye camera projection
+    query_pc_rgb = [e[0]['query_pc_rgb'] for e in batch]
+    query_pc_rgb_float = [torch.from_numpy(r).float() if isinstance(r, np.ndarray) else r.float() for r in query_pc_rgb]
+    utonia_rgb = torch.cat(query_pc_rgb_float, dim=0)  # [N_total, 3]
+
 
     db_map = torch.stack([e[0]['db_map'] for e in batch])
     # positive_db_map = torch.stack([e[0]['positive_db_map'] for e in batch])
@@ -251,6 +264,7 @@ def kitti360_collate_fn_cache_q(batch):
         'utonia_coord': raw_coords.float(),         # real XYZ in float
         'utonia_grid_coord': raw_coords.int(),      # quantized
         'utonia_feat': utonia_feat,                 # [N, 3]: xyz coordinates
+        'utonia_rgb': utonia_rgb,                   # [N, 3]: projected RGB (0-1)
         'utonia_offset': utonia_offset,
     }
     return output_dict, indices
@@ -531,7 +545,7 @@ class KITTI360BaseDataset(data.Dataset):
             qpcdir = os.path.join(dataroot, 'data_3d_voxel0.5', selectlocation, 'velodyne_points/data')
             qposedir = os.path.join(dataroot, 'data_poses', selectlocation, 'oxts/data')
             qimage00dir = os.path.join(dataroot, f'data_2d_raw_resize{resize}', selectlocation, 'image_00/data_rect')
-            # qimage02dir = os.path.join(dataroot, f'data_2d_raw_resize{resize}', selectlocation, 'image_02/data_rgb')
+            qimage02dir = os.path.join(dataroot, f'data_2d_raw_resize{resize}', selectlocation, 'image_02/data_rgb')
             # qimage03dir = os.path.join(dataroot, f'data_2d_raw_resize{resize}', selectlocation, 'image_03/data_rgb')
             qimage0203dir = os.path.join(dataroot, 'data_2d_cat0203', selectlocation, 'image_0203/data_rgb')
             qpcnames = sorted(os.listdir(qpcdir))
@@ -554,7 +568,7 @@ class KITTI360BaseDataset(data.Dataset):
                     raise NotImplementedError
                 qpcpath = os.path.join(qpcdir, qimage0203name.replace('.png','.bin'))
                 qimage00path = os.path.join(qimage00dir, qimage0203name.replace('.png','.png'))
-                # qimage02path = os.path.join(qimage02dir, qimage0203name.replace('.png','.png'))
+                qimage02path = os.path.join(qimage02dir, qimage0203name.replace('.png','.png'))
                 # qimage03path = os.path.join(qimage03dir, qimage0203name.replace('.png','.png'))
                 qimage0203path = os.path.join(qimage0203dir, qimage0203name.replace('.png','.png'))
                 qposepath = os.path.join(qposedir, qimage0203name.replace('.png','.txt'))
@@ -570,7 +584,7 @@ class KITTI360BaseDataset(data.Dataset):
                     'north': north,
                     'qposepath': qposepath,
                     'qimage00path': qimage00path,
-                    # 'qimage02path': qimage02path,
+                    'qimage02path': qimage02path,
                     # 'qimage03path': qimage03path,
                     'qimage0203path': qimage0203path,
                     'qpcpath': qpcpath,
@@ -652,17 +666,26 @@ class KITTI360BaseDataset(data.Dataset):
 
     
     def __getitem__(self, index):
+        query_pc_rgb = np.zeros((1, 3), dtype=np.float32)  # default
         if index >= self.database_num: # query
             # print(index)
             if opt.camnames == '00':
                 query_image = load_qimage(datapath=self.queries_infos[index-self.database_num]['qimage00path'],split=self.split)
             elif opt.camnames == '0203':
-                query_image = load_qimage(datapath=self.database_queries_infos[index]['qimage0203path'],split=self.split) 
+                query_image = load_qimage(datapath=self.database_queries_infos[index]['qimage0203path'],split=self.split)
             else:
                 raise NotImplementedError
             if opt.read_pc == True:
                 query_sph, query_bev = torch.empty(0), torch.empty(0)
                 query_pc, query_sph, query_bev = load_pc_sph_bev(file_path=self.database_queries_infos[index]['qpcpath'],split=self.split)
+                # Project RGB from fisheye camera to point cloud
+                calib = get_calibration(opt.dataroot)
+                if calib is not None:
+                    info = self.database_queries_infos[index]
+                    img02 = Image.open(info['qimage02path']).convert('RGB')
+                    query_pc_rgb = colorize_points(query_pc, img02, calib)
+                else:
+                    query_pc_rgb = np.zeros((query_pc.shape[0], 3), dtype=np.float32)
             else:
                 query_pc = torch.ones([1,3]).float()
                 query_sph = torch.empty(0)
@@ -684,15 +707,16 @@ class KITTI360BaseDataset(data.Dataset):
                     each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_satellite_path'], split=self.split)
                 elif each_maptype == 'roadmap':
                     each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_roadmap_path'], split=self.split)
-                db_map.append(each_db_map) 
+                db_map.append(each_db_map)
             db_map = torch.stack(db_map, 0) # [nmap,3,h,w]
             query_eastnorth = torch.empty(0)
 
         output_dict = {
-            'query_image': query_image, 
+            'query_image': query_image,
             'query_bev': query_bev,
             'query_sph': query_sph,
             'query_pc': query_pc,
+            'query_pc_rgb': query_pc_rgb,
             'db_map': db_map,
             'query_eastnorth': query_eastnorth
         }
@@ -825,14 +849,22 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         if opt.read_pc == True:
             query_sph, query_bev = torch.empty(0), torch.empty(0)
             query_pc, query_sph, query_bev = load_pc_sph_bev(file_path=self.queries_infos[query_index]['qpcpath'],split=self.split)
+            # Project RGB from fisheye camera to point cloud
+            calib = get_calibration(opt.dataroot)
+            if calib is not None:
+                img02 = Image.open(self.queries_infos[query_index]['qimage02path']).convert('RGB')
+                query_pc_rgb = colorize_points(query_pc, img02, calib)
+            else:
+                query_pc_rgb = np.zeros((query_pc.shape[0], 3), dtype=np.float32)
         # query_pc = load_pc(file_path=self.queries_infos[query_index]['qpcpath'],split=self.split)
         else:
             query_pc = torch.ones([1,3]).float()
+            query_pc_rgb = np.zeros((1, 3), dtype=np.float32)
             query_sph = torch.empty(0)
             query_bev = torch.empty(0)
 
 
-        # positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['dbpath'])  # [3,h,w] 
+        # positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['dbpath'])  # [3,h,w]
         # positive_db_map = []
         # negative_db_map = []
         # if opt.maptype == 'satellite':
@@ -900,6 +932,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
             'query_sph': query_sph,
             'query_bev': query_bev,
             'query_pc': query_pc,
+            'query_pc_rgb': query_pc_rgb,
             'query_eastnorth': query_eastnorth,
             'db_map': db_map,
             'db_eastnorth': db_eastnorth
