@@ -148,6 +148,18 @@ class UtoniaFE(nn.Module):
         normals = data_dict.get('normal', torch.zeros_like(coord))
         batch = offset2batch(offset)
 
+        if not getattr(self, '_logged_once', False):
+            with torch.no_grad():
+                c = data_dict['coord']
+                g = data_dict['grid_coord']
+                logging.info(
+                    f"[Utonia in] coord range=[{c.min().item():.2f},{c.max().item():.2f}] "
+                    f"mean={c.mean().item():.2f} std={c.std().item():.2f}  "
+                    f"grid range=[{g.min().item()},{g.max().item()}]  "
+                    f"N={c.shape[0]} B={len(data_dict['offset'])}"
+                )
+            self._logged_once = True
+
         # Per-batch centering only. No per-sample range normalization:
         # grid_coord must remain at its true integer scale so PTv3's
         # space-filling-curve ordering and patch partitioning reflect

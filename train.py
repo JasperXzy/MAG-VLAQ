@@ -236,8 +236,8 @@ def main():
     if use_ddp:
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         modelq = nn.SyncBatchNorm.convert_sync_batchnorm(modelq)
-        model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
-        modelq = DDP(modelq, device_ids=[local_rank], find_unused_parameters=False)
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+        modelq = DDP(modelq, device_ids=[local_rank], find_unused_parameters=True)
 
     # Unwrapped references for inference, save/load, optimizer param groups
     model_without_ddp = model.module if use_ddp else model
@@ -339,6 +339,17 @@ def main():
         logging_info(f"Number of parameters in optimizerdb: {num_params_db}")
         logging.info(f"Number of parameters in optimizerq: {num_params_q}")
         logging_info(f"Number of parameters in optimizerq: {num_params_q}")
+
+        # Phase 0 instrumentation: per param_group lr + Utonia trainable ratio
+        for i, g in enumerate(params_q):
+            n = sum(p.numel() for p in g['params'])
+            logging.info(f"[param_group {i}] {n/1e6:.3f}M params @ lr={g['lr']}")
+
+        if hasattr(modelq_without_ddp, 'vox_fe') and hasattr(modelq_without_ddp.vox_fe, 'ptv3'):
+            ptv3 = modelq_without_ddp.vox_fe.ptv3
+            n_total = sum(p.numel() for p in ptv3.parameters())
+            n_train = sum(p.numel() for p in ptv3.parameters() if p.requires_grad)
+            logging.info(f"[PTv3] trainable {n_train/1e6:.2f}M / total {n_total/1e6:.2f}M")
 
 
     if args.criterion == "triplet":

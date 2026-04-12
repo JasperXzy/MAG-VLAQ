@@ -58,6 +58,10 @@ class MinkGeM(nn.Module):
 
     def forward(self, x: SimpleSparse):
         assert isinstance(x, SimpleSparse)
+        if not getattr(self, '_sanity_done', False):
+            batch_ids = x.C[:, 0]
+            assert batch_ids.min() >= 0, "negative batch id"
+            self._sanity_done = True
         # Clamp + power
         powered = SimpleSparse(
             features=x.F.clamp(min=self.eps).pow(self.p),
