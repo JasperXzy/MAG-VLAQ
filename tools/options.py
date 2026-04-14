@@ -70,6 +70,8 @@ def parse_arguments():
     parser.add_argument("--unfreeze_utonia_mode", type=str, default="last1", choices=["frozen", "last1", "full"], help="Utonia freeze mode: frozen=all frozen, last1=stage4 only (~40M/29%%), full=all (~137M)")
     parser.add_argument("--lrutonia", type=float, default=1e-5, help="Learning rate for unfrozen Utonia parameters")
     parser.add_argument("--utonia_extract_stages", type=str, default="0_2_4", help="PTv3 encoder stages to extract for ODE fusion")
+    parser.add_argument("--amp_dtype", type=str, default="none", choices=["none", "bf16", "fp16"],
+                        help="Mixed precision for forward/loss. 'bf16' is recommended on Ampere+ (4090). 'fp16' requires GradScaler (not wired up here).")
     parser.add_argument('--resize', type=int, default=[256,256], nargs=2, help="Resizing shape for images (HxW).") # database transform
     parser.add_argument('--color_jitter', type=float, default=0) # query transform
     parser.add_argument('--quant_size', type=float, default=2) # query transform

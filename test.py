@@ -104,7 +104,15 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
 
 
     
-    with torch.no_grad():
+    import contextlib
+    amp_dt = getattr(args, 'amp_dtype', 'none')
+    if amp_dt == 'bf16':
+        _amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+    elif amp_dt == 'fp16':
+        _amp_ctx = torch.autocast(device_type='cuda', dtype=torch.float16)
+    else:
+        _amp_ctx = contextlib.nullcontext()
+    with torch.no_grad(), _amp_ctx:
         # ============ database
         logging.debug("Extracting database features for evaluation/testing")
         # For database use "hard_resize", although it usually has no effect because database images have same resolution
@@ -130,7 +138,7 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
                 if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
             features = model(data_dict, mode='db')
             features = features['embedding']
-            features = features.cpu().numpy()
+            features = features.float().cpu().numpy()
             if pca is not None:
                 features = pca.transform(features)
             all_features[indices.numpy(), :] = features
@@ -165,7 +173,7 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
             features = features['embedding']
             if test_method == "five_crops":  # Compute mean along the 5 crops
                 features = torch.stack(torch.split(features, 5)).mean(1)
-            features = features.cpu().numpy()
+            features = features.float().cpu().numpy()
             if pca is not None:
                 features = pca.transform(features)
             if test_method == "nearest_crop" or test_method == 'maj_voting':  # store the features of all 5 crops

@@ -39,6 +39,12 @@ from tools.options import parse_arguments
 opt = parse_arguments()
 
 
+# Utonia official input pipeline constants (transform.default(scale=0.2)
+# + GridSample(grid_size=0.01)). Effective voxel = 0.01 / 0.2 = 0.05 m.
+UTONIA_GLOBAL_SCALE = 0.2
+UTONIA_GRID_SIZE = 0.01
+
+
 def estimate_normals_o3d(pts, k=30):
     """Per-point normal estimation via Open3D, matching the Utonia paper:
         "Surface normals are estimated with Open3D, including directions
@@ -234,25 +240,29 @@ def kitti360_collate_fn(batch):
         # Per-sample Causal Modality Blinding (Sec 3.1): randomly zero RGB or normal
         r_np_b, n_rot_b = _causal_modality_blind(r_np, n_rot, p_drop_rgb=0.3, p_drop_normal=0.3)
 
-        # Int grid from augmented coords and dedup
-        p_int = p_rot.astype(np.int32)
+        # Utonia official input: first global scale 0.2, then floor(coord / 0.01).
+        # Effective voxel size = 0.05 m (real physical scale).
+        p_scaled = p_rot * UTONIA_GLOBAL_SCALE
+        p_int = np.floor(p_scaled / UTONIA_GRID_SIZE).astype(np.int32)
+
         keep = _dedup_grid(p_int)
-        p_rot_k = p_rot[keep]
+        p_scaled_k = p_scaled[keep]
         p_int_k = p_int[keep]
         r_k = r_np_b[keep] if r_np_b.shape[0] == p_np.shape[0] else np.zeros((len(keep), 3), dtype=np.float32)
         n_k = n_rot_b[keep]
 
         n_pts = len(keep)
-        utonia_coord_list.append(torch.from_numpy(p_rot_k))
+        utonia_coord_list.append(torch.from_numpy(p_scaled_k))
         utonia_grid_list.append(torch.from_numpy(p_int_k))
         utonia_rgb_list.append(torch.from_numpy(r_k))
         utonia_normal_list.append(torch.from_numpy(n_k))
         utonia_point_counts.append(n_pts)
         utonia_batch_ids.append(torch.full((n_pts, 1), i, dtype=torch.int32))
 
-        # For ME (MinkFPN fallback): use pre-dedup rotated int (ME handles dedup internally)
-        me_coord_list.append(torch.from_numpy(p_int.astype(np.int32)))
-        me_batch_ids.append(torch.full((p_int.shape[0], 1), i, dtype=torch.int32))
+        # For ME (MinkFPN fallback): keep meter units + floor (not truncate)
+        me_int = np.floor(p_rot).astype(np.int32)
+        me_coord_list.append(torch.from_numpy(me_int))
+        me_batch_ids.append(torch.full((me_int.shape[0], 1), i, dtype=torch.int32))
 
     utonia_coord = torch.cat(utonia_coord_list, dim=0).float()
     utonia_grid_coord = torch.cat(utonia_grid_list, dim=0).int()
@@ -365,9 +375,12 @@ def kitti360_collate_fn_cache_q(batch):
             n_np = n_np.numpy()
         n_np = n_np.astype(np.float32, copy=False)
 
-        p_int = p_np.astype(np.int32)
+        # Utonia official input (no augmentation): global scale 0.2 then floor / 0.01.
+        p_scaled = p_np * UTONIA_GLOBAL_SCALE
+        p_int = np.floor(p_scaled / UTONIA_GRID_SIZE).astype(np.int32)
+
         keep = _dedup_grid(p_int)
-        p_k = p_np[keep]
+        p_k = p_scaled[keep]
         g_k = p_int[keep]
         r_k = r_np[keep] if r_np.shape[0] == p_np.shape[0] else np.zeros((len(keep), 3), dtype=np.float32)
         n_k = n_np[keep]
@@ -379,8 +392,9 @@ def kitti360_collate_fn_cache_q(batch):
         utonia_normal_list.append(torch.from_numpy(n_k))
         utonia_point_counts.append(n_pts)
 
-        me_coord_list.append(torch.from_numpy(p_int))
-        me_batch_ids.append(torch.full((p_int.shape[0], 1), i, dtype=torch.int32))
+        me_int = np.floor(p_np).astype(np.int32)
+        me_coord_list.append(torch.from_numpy(me_int))
+        me_batch_ids.append(torch.full((me_int.shape[0], 1), i, dtype=torch.int32))
 
     utonia_coord = torch.cat(utonia_coord_list, dim=0).float()
     utonia_grid_coord = torch.cat(utonia_grid_list, dim=0).int()
@@ -1171,17 +1185,25 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         # RAMEfficient2DMatrix can be replaced by np.zeros, but using
         # RAMEfficient2DMatrix is RAM efficient for full database mining.
         cache = RAMEfficient2DMatrix(cache_shape, dtype=np.float32) # [db+q, c]
-        with torch.no_grad():
+        import contextlib
+        amp_dt = getattr(args, 'amp_dtype', 'none')
+        if amp_dt == 'bf16':
+            amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+        elif amp_dt == 'fp16':
+            amp_ctx = torch.autocast(device_type='cuda', dtype=torch.float16)
+        else:
+            amp_ctx = contextlib.nullcontext()
+        with torch.no_grad(), amp_ctx:
             # db
             for data_dict, indexes in tqdm(subset_dl_db):
                 data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
                 features = model(data_dict, mode='db')
-                cache[indexes.numpy()] = features['embedding'].cpu().numpy()
+                cache[indexes.numpy()] = features['embedding'].float().cpu().numpy()
             # q
             for data_dict, indexes in tqdm(subset_dl_q):
                 data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
                 features = modelq(data_dict, mode='q')
-                cache[indexes.numpy()] = features['embedding'].cpu().numpy()
+                cache[indexes.numpy()] = features['embedding'].float().cpu().numpy()
         return cache
     
 

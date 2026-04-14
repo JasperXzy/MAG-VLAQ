@@ -113,6 +113,14 @@ class UtoniaFE(nn.Module):
             for param in self.ptv3.embedding.parameters():
                 param.requires_grad = True
 
+            # lrutonia=0 overrides freeze_mode → fully freeze PTv3 so no
+            # grad is computed and the optimizer gate in train.py drops it.
+            lrutonia = getattr(opt, 'lrutonia', 0.0)
+            if lrutonia == 0.0:
+                for param in self.ptv3.parameters():
+                    param.requires_grad = False
+                logging.info("[Utonia] lrutonia=0 -> PTv3 fully frozen (no grad)")
+
             n_total = sum(p.numel() for p in self.ptv3.parameters())
             n_trainable = sum(p.numel() for p in self.ptv3.parameters() if p.requires_grad)
             logging.info(f"Utonia freeze_mode={freeze_mode}: {n_trainable}/{n_total} params trainable "
@@ -125,11 +133,6 @@ class UtoniaFE(nn.Module):
         self.projs = nn.ModuleList([
             nn.Linear(self.utonia_channels[i], planes[i]) for i in range(len(planes))
         ])
-
-    # Fixed scene scale for KITTI-360 outdoor normalization of the 9ch feat's xyz part.
-    # Keeps feat magnitudes (~[0,2]) comparable to rgb ([0,1]) and normals ([-1,1])
-    # while preserving consistent scale across samples (unlike per-sample max).
-    FEAT_SCALE = 50.0
 
     def forward(self, data_dict):
         """
@@ -160,21 +163,18 @@ class UtoniaFE(nn.Module):
                 )
             self._logged_once = True
 
-        # Per-batch centering only. No per-sample range normalization:
-        # grid_coord must remain at its true integer scale so PTv3's
-        # space-filling-curve ordering and patch partitioning reflect
-        # real spatial relationships.
+        # Per-batch grid_coord shift only (PTv3 serialization expects
+        # non-negative grid indices). coord must NOT be shifted: the
+        # Velodyne frame already has ego at the origin, and that is the
+        # distribution the Utonia ckpt was pretrained with.
         for b in range(len(offset)):
             mask = batch == b
             if mask.sum() > 0:
-                grid_min = grid_coord[mask].min(dim=0)[0]
-                grid_coord[mask] = grid_coord[mask] - grid_min
-                coord_min = coord[mask].min(dim=0)[0]
-                coord[mask] = coord[mask] - coord_min
+                grid_coord[mask] = grid_coord[mask] - grid_coord[mask].min(dim=0)[0]
 
-        # 9ch feat: xyz uses a FIXED scale (not per-sample max) so feature
-        # magnitudes are stable across samples. grid_coord stays unscaled.
-        feat_xyz = coord / self.FEAT_SCALE
+        # 9ch feat keys = (coord, color, normal). coord is already in the
+        # official space (meters * UTONIA_GLOBAL_SCALE) from collate.
+        feat_xyz = coord
         data_dict['grid_coord'] = grid_coord
         data_dict['coord'] = coord
         data_dict['feat'] = torch.cat([feat_xyz, rgb, normals], dim=1)

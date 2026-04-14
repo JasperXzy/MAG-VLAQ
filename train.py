@@ -12,7 +12,7 @@ import torch.nn as nn
 import multiprocessing
 import os
 from os.path import join
-from datetime import datetime
+from datetime import datetime, timedelta
 from torch.utils.data.dataloader import DataLoader
 import time
 
@@ -67,7 +67,9 @@ def is_main_process():
 
 def setup_ddp():
     """Initialize DDP process group. Must be called before any DDP operations."""
-    dist.init_process_group(backend='nccl')
+    # rank0 runs compute_triplets alone while others wait at barrier;
+    # with Utonia's dense voxels this can exceed NCCL's default 600 s.
+    dist.init_process_group(backend='nccl', timeout=timedelta(seconds=3600))
     local_rank = int(os.environ['LOCAL_RANK'])
     torch.cuda.set_device(local_rank)
     return local_rank
@@ -98,6 +100,19 @@ def broadcast_triplets(triplets_ds, device):
     dist.broadcast(data, src=0)
 
     triplets_ds.triplets_global_indexes = data.cpu()
+
+
+def get_amp_ctx(args):
+    """Return a torch.autocast context manager based on --amp_dtype.
+    'none' -> real no-op (nullcontext); 'bf16'/'fp16' -> cuda autocast.
+    """
+    import contextlib
+    dt = getattr(args, 'amp_dtype', 'none')
+    if dt == 'bf16':
+        return torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+    if dt == 'fp16':
+        return torch.autocast(device_type='cuda', dtype=torch.float16)
+    return contextlib.nullcontext()
 
 
 # ======================== Loss ========================
@@ -274,13 +289,22 @@ def main():
             params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.image_fe.parameters()), 'lr': args.lr})
 
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.image_pool.parameters()), 'lr': args.lr})
-        if getattr(args, 'lrutonia', 0.0) > 0.0 and getattr(args, 'mm_voxfe_arch', 'minkfpn') == 'utonia':
-            utonia_ptv3_trainable = list(filter(lambda p: p.requires_grad, modelq_without_ddp.vox_fe.ptv3.parameters()))
-            utonia_proj_trainable = list(filter(lambda p: p.requires_grad, modelq_without_ddp.vox_fe.projs.parameters()))
-            if len(utonia_ptv3_trainable) > 0:
+        if getattr(args, 'mm_voxfe_arch', 'minkfpn') == 'utonia':
+            utonia_ptv3_trainable = [p for p in modelq_without_ddp.vox_fe.ptv3.parameters() if p.requires_grad]
+            utonia_proj_trainable = [p for p in modelq_without_ddp.vox_fe.projs.parameters() if p.requires_grad]
+
+            # Strict semantics: lrutonia=0 -> PTv3 NOT in optimizer (no fallback to lrpc).
+            if getattr(args, 'lrutonia', 0.0) > 0.0 and len(utonia_ptv3_trainable) > 0:
                 params_q.append({'params': utonia_ptv3_trainable, 'lr': args.lrutonia})
+
             if len(utonia_proj_trainable) > 0:
                 params_q.append({'params': utonia_proj_trainable, 'lr': args.lrpc})
+
+            # Any other trainable submodule inside vox_fe (not ptv3, not projs).
+            other_vox = [p for n, p in modelq_without_ddp.vox_fe.named_parameters()
+                         if p.requires_grad and not n.startswith('ptv3.') and not n.startswith('projs.')]
+            if len(other_vox) > 0:
+                params_q.append({'params': other_vox, 'lr': args.lrpc})
         else:
             params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.vox_fe.parameters()), 'lr': args.lrpc})
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.vox_pool.parameters()), 'lr': args.lrpc})
@@ -447,34 +471,30 @@ def main():
                     if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
 
 
-                with torch.set_grad_enabled(args.train_modelq):
-                    feats_ground = modelq(data_dict, mode='q') # [b,c]
-                    feats_ground_embed = feats_ground['embedding']
-                    feats_ground_embed = feats_ground_embed.unsqueeze(1) # [b,1,c]
+                with get_amp_ctx(args):
+                    with torch.set_grad_enabled(args.train_modelq):
+                        feats_ground = modelq(data_dict, mode='q') # [b,c]
+                        feats_ground_embed = feats_ground['embedding']
+                        feats_ground_embed = feats_ground_embed.unsqueeze(1) # [b,1,c]
 
+                    # dbs
+                    with torch.set_grad_enabled(args.train_modeldb):
+                        feats_aerial = model(data_dict, mode='db') # [b,11,c]
+                        feats_aerial_embed = feats_aerial['embedding']
 
+                    loss = 0
+                    if opt.modelq == 'mm':
+                        otherloss = compute_other_loss(feats_ground, feats_aerial, data_dict,
+                                                    positive_thd=opt.train_positives_dist_threshold,
+                                                    negative_thd=opt.val_positive_dist_threshold)
+                        loss += otherloss
 
-                # dbs
-                with torch.set_grad_enabled(args.train_modeldb):
-                    feats_aerial = model(data_dict, mode='db') # [b,11,c]
-                    feats_aerial_embed = feats_aerial['embedding']
-
-
-                loss = 0
-                if opt.modelq == 'mm':
-                    otherloss = compute_other_loss(feats_ground, feats_aerial, data_dict,
-                                                positive_thd=opt.train_positives_dist_threshold,
-                                                negative_thd=opt.val_positive_dist_threshold)
-                    loss += otherloss
-
-
-
-                # cat
-                feats = torch.cat((feats_ground_embed, feats_aerial_embed), dim=1)
-                feats = feats.view(-1, args.features_dim)
-                triplet_loss = compute_loss(args, criterion_triplet, triplets_local_indexes, feats)
-                loss += triplet_loss * opt.tripletloss_weight
-                del feats
+                    # cat
+                    feats = torch.cat((feats_ground_embed, feats_aerial_embed), dim=1)
+                    feats = feats.view(-1, args.features_dim)
+                    triplet_loss = compute_loss(args, criterion_triplet, triplets_local_indexes, feats)
+                    loss += triplet_loss * opt.tripletloss_weight
+                    del feats
 
                 optimizer.zero_grad()
                 optimizerq.zero_grad()
