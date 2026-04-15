@@ -34,14 +34,41 @@ from pc_augmentation import (
 from datasets.kitti360_calib import get_calibration, colorize_points
 import open3d as o3d
 
-from tools.options import parse_arguments
-opt = parse_arguments()
-
 
 # Utonia official input pipeline constants (transform.default(scale=0.2)
 # + GridSample(grid_size=0.01)). Effective voxel = 0.01 / 0.2 = 0.05 m.
 UTONIA_GLOBAL_SCALE = 0.2
 UTONIA_GRID_SIZE = 0.01
+
+_DATASET_PROGRESS_CALLBACK = None
+
+
+def set_progress_callback(callback):
+    global _DATASET_PROGRESS_CALLBACK
+    _DATASET_PROGRESS_CALLBACK = callback
+
+
+def _progress(iterable, args=None, desc=None, disable=False):
+    if _DATASET_PROGRESS_CALLBACK is not None and not disable:
+        total = len(iterable) if hasattr(iterable, "__len__") else None
+        _DATASET_PROGRESS_CALLBACK("start", desc, total)
+        try:
+            for item in iterable:
+                yield item
+                _DATASET_PROGRESS_CALLBACK("advance", desc, 1)
+        finally:
+            _DATASET_PROGRESS_CALLBACK("close", desc, None)
+        return
+
+    disable = disable or bool(getattr(args, "disable_dataset_tqdm", False))
+    yield from tqdm(
+        iterable,
+        desc=desc,
+        disable=disable,
+        dynamic_ncols=True,
+        leave=False,
+        mininterval=1.0,
+    )
 
 
 def estimate_normals_o3d(pts, k=30):
@@ -152,10 +179,6 @@ testselectlocationlist = [
     # "2013_05_28_drive_0009_sync",
     "2013_05_28_drive_0010_sync",
 ]
-
-
-train_ratio = opt.train_ratio
-share_db = opt.share_db
 
 
 base_transform = T.Compose([
@@ -439,18 +462,18 @@ def kitti360_collate_fn_cache_q(batch):
 
 
 
-def load_qimage(datapath, split):
+def load_qimage(datapath, split, args):
     image = Image.open(datapath)
     image = image.convert('RGB')
     if split == 'train':
-        tf = TVT.Compose([TVT.Resize((opt.q_resize, opt.q_resize)),
-                        TVT.ColorJitter(brightness=opt.q_jitter, contrast=opt.q_jitter, saturation=opt.q_jitter, hue=min(0.5, opt.q_jitter)),
+        tf = TVT.Compose([TVT.Resize((args.q_resize, args.q_resize)),
+                        TVT.ColorJitter(brightness=args.q_jitter, contrast=args.q_jitter, saturation=args.q_jitter, hue=min(0.5, args.q_jitter)),
                         TVT.ToTensor(),
                         #   TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                         TVT.Normalize(mean=0.5, std=0.22)
                         ])
     elif split == 'test':
-        tf = TVT.Compose([TVT.Resize((opt.q_resize, opt.q_resize)),
+        tf = TVT.Compose([TVT.Resize((args.q_resize, args.q_resize)),
                         TVT.ToTensor(),
                         #   TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                         TVT.Normalize(mean=0.5, std=0.22)
@@ -460,22 +483,22 @@ def load_qimage(datapath, split):
 
 
 
-def load_dbimage(datapath, split):
+def load_dbimage(datapath, split, args):
     image = Image.open(datapath)
     image = image.convert('RGB')
     if split == 'train':
         tf = TVT.Compose([
-            TVT.CenterCrop(opt.db_cropsize),
-            TVT.Resize((opt.db_resize, opt.db_resize)),
-            TVT.ColorJitter(brightness=opt.db_jitter, contrast=opt.db_jitter, saturation=opt.db_jitter, hue=min(0.5, opt.db_jitter)),
+            TVT.CenterCrop(args.db_cropsize),
+            TVT.Resize((args.db_resize, args.db_resize)),
+            TVT.ColorJitter(brightness=args.db_jitter, contrast=args.db_jitter, saturation=args.db_jitter, hue=min(0.5, args.db_jitter)),
             TVT.ToTensor(),
         #   TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             TVT.Normalize(mean=0.5, std=0.22)
                         ])
     elif split == 'test':
         tf = TVT.Compose([
-            TVT.CenterCrop(opt.db_cropsize),
-            TVT.Resize((opt.db_resize, opt.db_resize)),
+            TVT.CenterCrop(args.db_cropsize),
+            TVT.Resize((args.db_resize, args.db_resize)),
             TVT.ToTensor(),
         #   TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             TVT.Normalize(mean=0.5, std=0.22)
@@ -515,13 +538,13 @@ def generate_bev_from_pc(pc, w=200, max_thd=100):
 
 
 
-def generate_sph_from_pc(pc, w=361, h=61):
+def generate_sph_from_pc(pc, w=361, h=61, args=None):
     # kitti   w=361  h=61
     # ithaca  w=361  h=101
     # kitti360 w=361 h=61
     # w = 361
     # h = 61
-    # if 'ithaca365' in opt.dataset_name:
+    # if 'ithaca365' in args.dataset_name:
     #     w = 361
     #     h = 101
 
@@ -544,13 +567,13 @@ def generate_sph_from_pc(pc, w=361, h=61):
     uv = np.array(uv, dtype=np.int32)
     # plt.scatter(uv[:,1], uv[:,0], s=1, c=r, cmap='jet')
     # plt.show()
-    if 'ithaca365' in opt.dataset_name:
+    if args is not None and 'ithaca365' in args.dataset_name:
         ids_h = (uv[:,0] < h) &  (uv[:,0] >= 0)
         uv = uv[ids_h]
         r = r[ids_h]
     sph = np.zeros([h, w])
     sph[uv[:,0], uv[:,1]] = r
-    # if 'ithaca365' in opt.dataset_name:
+    # if 'ithaca365' in args.dataset_name:
     #     sph = sph[25:80]
     # plt.imshow(sph)
     # plt.imsave('sph.png', sph)
@@ -602,16 +625,17 @@ class KITTI360BaseDataset(data.Dataset):
     """
     def __init__(self, args, datasets_folder="datasets", dataset_name="pitts30k", split="train"):
         super().__init__()
+        self.args = args
         self.dataset_name = dataset_name
         
-        self.resize = args.resize
-        self.test_method = args.test_method
+        self.resize = self.args.resize
+        self.test_method = self.args.test_method
         self.split = split
         
 
         # ==========
         # Use  v1.0-trainval_singapore-onenorth  training
-        dataroot = opt.dataroot
+        dataroot = self.args.dataroot
         if split == 'train':
             selectlocationlist = trainselectlocationlist
         elif split == 'test':
@@ -635,13 +659,13 @@ class KITTI360BaseDataset(data.Dataset):
             assert len(qpcnames) == len(qimage00names)
             assert len(qpcnames) == len(qimage0203names)
             if split == 'train':
-                qimage0203names = qimage0203names[:int(len(qimage0203names)*train_ratio)]
+                qimage0203names = qimage0203names[:int(len(qimage0203names)*self.args.train_ratio)]
             elif split == 'test':
-                qimage0203names = qimage0203names[int(len(qimage0203names)*train_ratio):]
+                qimage0203names = qimage0203names[int(len(qimage0203names)*self.args.train_ratio):]
             print(f"Number of q samples in {selectlocation}: {len(qimage0203names)}")
             for i_sample, qimage0203name in enumerate(qimage0203names):
                 if split == 'train':
-                    if i_sample % opt.traindownsample!= 0: # using 1/2 samples for training
+                    if i_sample % self.args.traindownsample!= 0: # using 1/2 samples for training
                         continue
                 elif split == 'test': # using all samples for testing
                     None
@@ -684,7 +708,7 @@ class KITTI360BaseDataset(data.Dataset):
         scale = 1
         zoom = 20   # higher is closer
         size = 320
-        # maptype = opt.maptype
+        # maptype = self.args.maptype
         # maptype = 'satellite'
         # maptype = 'osm'
         for selectlocation in selectlocationlist:
@@ -697,16 +721,16 @@ class KITTI360BaseDataset(data.Dataset):
             # db_osm_dir = os.path.join(dataroot, f'data_aerial_19_{size}_osm', selectlocation)
             dbnames = os.listdir(db_satellite_dir)
             dbnames = sorted(dbnames)
-            if share_db == True:
+            if self.args.share_db == True:
                 dbnames = dbnames
-            elif share_db == False:
+            elif self.args.share_db == False:
                 if split == 'train':
-                    dbnames = dbnames[:int(len(dbnames)*train_ratio)]
+                    dbnames = dbnames[:int(len(dbnames)*self.args.train_ratio)]
                 elif split == 'test':
-                    dbnames = dbnames[int(len(dbnames)*train_ratio):]
+                    dbnames = dbnames[int(len(dbnames)*self.args.train_ratio):]
             for i_dbname, dbname in enumerate(dbnames):
                 if split == 'train':
-                    if i_dbname % opt.traindownsample != 0: 
+                    if i_dbname % self.args.traindownsample != 0:
                         continue
                 elif split == 'test':
                     None
@@ -733,9 +757,9 @@ class KITTI360BaseDataset(data.Dataset):
 
 
         # Find positive and negative 
-        knn = NearestNeighbors(n_jobs=opt.num_workers+1)
+        knn = NearestNeighbors(n_jobs=self.args.num_workers+1)
         knn.fit(self.database_utms)
-        softposthd = opt.val_positive_dist_threshold  # 25
+        softposthd = self.args.val_positive_dist_threshold  # 25
         self.soft_positives_per_query = knn.radius_neighbors(self.queries_utms,
                                                              radius=softposthd,
                                                              return_distance=False)
@@ -751,17 +775,17 @@ class KITTI360BaseDataset(data.Dataset):
         query_pc_normal = np.zeros((1, 3), dtype=np.float32)
         if index >= self.database_num: # query
             # print(index)
-            if opt.camnames == '00':
-                query_image = load_qimage(datapath=self.queries_infos[index-self.database_num]['qimage00path'],split=self.split)
-            elif opt.camnames == '0203':
-                query_image = load_qimage(datapath=self.database_queries_infos[index]['qimage0203path'],split=self.split)
+            if self.args.camnames == '00':
+                query_image = load_qimage(datapath=self.queries_infos[index-self.database_num]['qimage00path'], split=self.split, args=self.args)
+            elif self.args.camnames == '0203':
+                query_image = load_qimage(datapath=self.database_queries_infos[index]['qimage0203path'], split=self.split, args=self.args)
             else:
                 raise NotImplementedError
-            if opt.read_pc == True:
+            if self.args.read_pc == True:
                 query_sph, query_bev = torch.empty(0), torch.empty(0)
                 query_pc, query_sph, query_bev = load_pc_sph_bev(file_path=self.database_queries_infos[index]['qpcpath'],split=self.split)
                 # Project RGB from fisheye camera to point cloud
-                calib = get_calibration(opt.dataroot)
+                calib = get_calibration(self.args.dataroot)
                 if calib is not None:
                     info = self.database_queries_infos[index]
                     img02 = Image.open(info['qimage02path']).convert('RGB')
@@ -785,13 +809,13 @@ class KITTI360BaseDataset(data.Dataset):
         else: # database
             query_image = torch.empty(0)
             query_pc, query_bev, query_sph = torch.empty(0), torch.empty(0), torch.empty(0)
-            maptype = opt.maptype.split('_')
+            maptype = self.args.maptype.split('_')
             db_map = []
             for each_maptype in maptype:
                 if each_maptype == 'satellite':
-                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_satellite_path'], split=self.split)
+                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_satellite_path'], split=self.split, args=self.args)
                 elif each_maptype == 'roadmap':
-                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_roadmap_path'], split=self.split)
+                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_roadmap_path'], split=self.split, args=self.args)
                 db_map.append(each_db_map)
             db_map = torch.stack(db_map, 0) # [nmap,3,h,w]
             query_eastnorth = torch.empty(0)
@@ -877,7 +901,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         # Find hard_positives_per_query, which are within train_positives_dist_threshold (10 meters)
         knn = NearestNeighbors(n_jobs=-1)
         knn.fit(self.database_utms)
-        hardposthd = opt.train_positives_dist_threshold
+        hardposthd = self.args.train_positives_dist_threshold
         self.hard_positives_per_query = list(knn.radius_neighbors(self.queries_utms,
                                              radius=hardposthd,  # 10 meters
                                              return_distance=False))
@@ -923,20 +947,20 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
             return super().__getitem__(index)
 
         query_index, best_positive_index, neg_indexes = torch.split(self.triplets_global_indexes[index], (1, 1, self.negs_num_per_query))
-        if opt.camnames == '00':
-            query_image = load_qimage(datapath=self.queries_infos[query_index]['qimage00path'],split=self.split)
-        elif opt.camnames == '0203':
-            query_image = load_qimage(datapath=self.queries_infos[query_index]['qimage0203path'],split=self.split) # [3,h,w]
+        if self.args.camnames == '00':
+            query_image = load_qimage(datapath=self.queries_infos[query_index]['qimage00path'], split=self.split, args=self.args)
+        elif self.args.camnames == '0203':
+            query_image = load_qimage(datapath=self.queries_infos[query_index]['qimage0203path'], split=self.split, args=self.args) # [3,h,w]
         else:
             raise NotImplementedError
         query_info = self.queries_infos[query_index]
         query_eastnorth = torch.tensor([query_info['east'], query_info['north']])
 
-        if opt.read_pc == True:
+        if self.args.read_pc == True:
             query_sph, query_bev = torch.empty(0), torch.empty(0)
             query_pc, query_sph, query_bev = load_pc_sph_bev(file_path=self.queries_infos[query_index]['qpcpath'],split=self.split)
             # Project RGB from fisheye camera to point cloud
-            calib = get_calibration(opt.dataroot)
+            calib = get_calibration(self.args.dataroot)
             if calib is not None:
                 img02 = Image.open(self.queries_infos[query_index]['qimage02path']).convert('RGB')
                 img03 = Image.open(self.queries_infos[query_index]['qimage03path']).convert('RGB')
@@ -957,13 +981,13 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         # positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['dbpath'])  # [3,h,w]
         # positive_db_map = []
         # negative_db_map = []
-        # if opt.maptype == 'satellite':
+        # if self.args.maptype == 'satellite':
         #     positive_db_satellite_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_satellite_path'],split=self.split)  # [3,h,w]
         #     negative_db_satellite_map = [load_dbimage(datapath=self.database_infos[e]['db_satellite_path'],split=self.split) for e in neg_indexes] # [nneg,3,h,w]
         #     negative_db_satellite_map = torch.stack(negative_db_satellite_map, 0)  # [nneg,3,h,w]
         #     positive_db_map.append(positive_db_satellite_map)
         #     negative_db_map.append(negative_db_satellite_map)
-        # elif opt.maptype == 'roadmap':
+        # elif self.args.maptype == 'roadmap':
         #     positive_db_roadmap_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_roadmap_path'],split=self.split)
         #     negative_db_roadmap_map = [load_dbimage(datapath=self.database_infos[e]['db_roadmap_path'],split=self.split) for e in neg_indexes]
         #     negative_db_roadmap_map = torch.stack(negative_db_roadmap_map, 0)  # [nneg,3,h,w]
@@ -980,18 +1004,18 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         # negative_db_roadmap_map = torch.stack(negative_db_roadmap_map, 0)  # [nneg,3,h,w]
         # negative_db_map = torch.stack([negative_db_satellite_map, negative_db_roadmap_map], 1)  # [nneg,nmap,3,h,w]
 
-        maptype = opt.maptype.split('_')
+        maptype = self.args.maptype.split('_')
         positive_db_map = []
         negative_db_map = []
         for each_maptype in maptype:
             if each_maptype == 'satellite':
-                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_satellite_path'],split=self.split)
-                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_satellite_path'],split=self.split) for e in neg_indexes]
+                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_satellite_path'], split=self.split, args=self.args)
+                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_satellite_path'], split=self.split, args=self.args) for e in neg_indexes]
                 # each_positive_db_info = self.database_infos[best_positive_index]
                 # each_negative_db_info = [self.database_infos[e] for e in neg_indexes]
             elif each_maptype == 'roadmap':
-                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_roadmap_path'],split=self.split)
-                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_roadmap_path'],split=self.split) for e in neg_indexes]
+                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_roadmap_path'], split=self.split, args=self.args)
+                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_roadmap_path'], split=self.split, args=self.args) for e in neg_indexes]
                 # each_positive_db_info = self.database_infos[best_positive_index]
                 # each_negative_db_info = [self.database_infos[e] for e in neg_indexes]
 
@@ -1067,7 +1091,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         # RAMEfficient2DMatrix is RAM efficient for full database mining.
         cache = RAMEfficient2DMatrix(cache_shape, dtype=np.float32) # [db+q, c]
         with torch.no_grad():
-            for images, indexes in tqdm(subset_dl):
+            for images, indexes in _progress(subset_dl, args=args, desc="cache"):
                 images = images.to(args.device)
                 features = model(images)
                 cache[indexes.numpy()] = features.cpu().numpy()
@@ -1098,8 +1122,17 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         model = model.eval()
         modelq = modelq.eval()
 
-        subset_ds_db = Subset(subset_ds.dataset, list(range(subset_ds.dataset.database_num)))
-        subset_ds_q = Subset(subset_ds.dataset, list(range(subset_ds.dataset.database_num, len(subset_ds.dataset))))
+        if isinstance(subset_ds, Subset):
+            parent_ds = subset_ds.dataset
+            subset_indices = [int(i) for i in subset_ds.indices]
+        else:
+            parent_ds = subset_ds
+            subset_indices = list(range(len(parent_ds)))
+        db_indices = [i for i in subset_indices if i < parent_ds.database_num]
+        q_indices = [i for i in subset_indices if i >= parent_ds.database_num]
+
+        subset_ds_db = Subset(parent_ds, db_indices)
+        subset_ds_q = Subset(parent_ds, q_indices)
 
         if ddp_on:
             db_sampler = DistributedSampler(subset_ds_db, shuffle=False, drop_last=False)
@@ -1133,7 +1166,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
             """Run inference on this rank's shard, then all_gather (idx, feat)
             pairs and fill the full cache on every rank."""
             local_idx_chunks, local_feat_chunks = [], []
-            for data_dict, indexes in tqdm(dataloader, disable=(rank != 0)):
+            for data_dict, indexes in _progress(dataloader, args=args, desc=f"cache/{mode}", disable=(rank != 0)):
                 for _k, _v in data_dict.items():
                     if isinstance(_v, torch.Tensor):
                         data_dict[_k] = _v.to(args.device)
@@ -1208,7 +1241,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         cache = self.compute_cache(args, model, subset_ds, (len(self), args.features_dim))
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache)
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             
@@ -1232,7 +1265,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         cache = self.compute_cache(args, model, subset_ds, (len(self), args.features_dim))
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache)
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             # Choose 1000 random database images (neg_indexes)
@@ -1280,7 +1313,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         cache = self.compute_cache(args, model, subset_ds, cache_shape=(cache_length, args.features_dim)) 
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache) # query_features = cache[query_index + self.database_num]
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             
@@ -1347,7 +1380,7 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
             # broadcasting the result is simpler and roughly as fast as
             # sharding. broadcast_triplets (called right after this) sends
             # the tensor to the other ranks.
-            for query_index in tqdm(sampled_queries_indexes):
+            for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
                 query_features = self.get_query_features(query_index, cache)
                 best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
                 soft_positives = self.soft_positives_per_query[query_index]

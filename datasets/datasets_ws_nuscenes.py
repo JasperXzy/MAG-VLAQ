@@ -35,8 +35,36 @@ from nuscenes.nuscenes import NuScenes
 
 from nuscenes.utils.data_classes import LidarPointCloud
 
-from tools.options import parse_arguments
-opt = parse_arguments()
+_DATASET_PROGRESS_CALLBACK = None
+
+
+def set_progress_callback(callback):
+    global _DATASET_PROGRESS_CALLBACK
+    _DATASET_PROGRESS_CALLBACK = callback
+
+
+def _progress(iterable, args=None, desc=None, disable=False):
+    if _DATASET_PROGRESS_CALLBACK is not None and not disable:
+        total = len(iterable) if hasattr(iterable, "__len__") else None
+        _DATASET_PROGRESS_CALLBACK("start", desc, total)
+        try:
+            for item in iterable:
+                yield item
+                _DATASET_PROGRESS_CALLBACK("advance", desc, 1)
+        finally:
+            _DATASET_PROGRESS_CALLBACK("close", desc, None)
+        return
+
+    disable = disable or bool(getattr(args, "disable_dataset_tqdm", False))
+    yield from tqdm(
+        iterable,
+        desc=desc,
+        disable=disable,
+        dynamic_ncols=True,
+        leave=False,
+        mininterval=1.0,
+    )
+
 
 
 
@@ -84,8 +112,6 @@ testselectlocationlist = [
 ]
 
 
-train_ratio = opt.train_ratio
-share_db = opt.share_db
 
 
 base_transform = T.Compose([
@@ -265,14 +291,14 @@ def nuscenes_collate_fn_cache_q(batch):
 #     image = Image.open(datapath)
 #     image = image.convert('RGB')
 #     if split == 'train':
-#         tf = TVT.Compose([TVT.Resize(opt.q_resize), 
-#                         # TVT.ColorJitter(brightness=opt.q_jitter, contrast=opt.q_jitter, saturation=opt.q_jitter, hue=min(0.5, opt.q_jitter)),
+#         tf = TVT.Compose([TVT.Resize(args.q_resize), 
+#                         # TVT.ColorJitter(brightness=args.q_jitter, contrast=args.q_jitter, saturation=args.q_jitter, hue=min(0.5, args.q_jitter)),
 #                         TVT.ToTensor(),
 #                           TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 #                         # TVT.Normalize(mean=0.5, std=0.22)
 #                         ])
 #     elif split == 'test':
-#         tf = TVT.Compose([TVT.Resize(opt.q_resize), 
+#         tf = TVT.Compose([TVT.Resize(args.q_resize), 
 #                         TVT.ToTensor(),
 #                           TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 #                         # TVT.Normalize(mean=0.5, std=0.22)
@@ -282,22 +308,22 @@ def nuscenes_collate_fn_cache_q(batch):
 
 
 
-def load_dbimage(datapath, split):
+def load_dbimage(datapath, split, args):
     image = Image.open(datapath)
     image = image.convert('RGB')
     if split == 'train':
         tf = TVT.Compose([
-            # TVT.CenterCrop(opt.db_cropsize),
-            TVT.Resize((opt.db_resize, opt.db_resize), antialias=True),
-            # TVT.ColorJitter(brightness=opt.db_jitter, contrast=opt.db_jitter, saturation=opt.db_jitter, hue=min(0.5, opt.db_jitter)),
+            # TVT.CenterCrop(args.db_cropsize),
+            TVT.Resize((args.db_resize, args.db_resize), antialias=True),
+            # TVT.ColorJitter(brightness=args.db_jitter, contrast=args.db_jitter, saturation=args.db_jitter, hue=min(0.5, args.db_jitter)),
             TVT.ToTensor(),
             TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             # TVT.Normalize(mean=0.5, std=0.22)
                         ])
     elif split == 'test':
         tf = TVT.Compose([
-            # TVT.CenterCrop(opt.db_cropsize),
-            TVT.Resize((opt.db_resize, opt.db_resize), antialias=True),
+            # TVT.CenterCrop(args.db_cropsize),
+            TVT.Resize((args.db_resize, args.db_resize), antialias=True),
             TVT.ToTensor(),
             TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             # TVT.Normalize(mean=0.5, std=0.22)
@@ -337,13 +363,13 @@ def generate_bev_from_pc(pc, w=200, max_thd=100):
 
 
 
-def generate_sph_from_pc(pc, w=361, h=61):
+def generate_sph_from_pc(pc, w=361, h=61, args=None):
     # kitti   w=361  h=61
     # ithaca  w=361  h=101
     # kitti360 w=361 h=61
     # w = 361
     # h = 61
-    # if 'ithaca365' in opt.dataset_name:
+    # if 'ithaca365' in args.dataset_name:
     #     w = 361
     #     h = 101
 
@@ -366,13 +392,13 @@ def generate_sph_from_pc(pc, w=361, h=61):
     uv = np.array(uv, dtype=np.int32)
     # plt.scatter(uv[:,1], uv[:,0], s=1, c=r, cmap='jet')
     # plt.show()
-    if 'ithaca365' in opt.dataset_name:
+    if args is not None and 'ithaca365' in args.dataset_name:
         ids_h = (uv[:,0] < h) &  (uv[:,0] >= 0)
         uv = uv[ids_h]
         r = r[ids_h]
     sph = np.zeros([h, w])
     sph[uv[:,0], uv[:,1]] = r
-    # if 'ithaca365' in opt.dataset_name:
+    # if 'ithaca365' in args.dataset_name:
     #     sph = sph[25:80]
     # plt.imshow(sph)
     # plt.imsave('sph.png', sph)
@@ -383,28 +409,28 @@ def generate_sph_from_pc(pc, w=361, h=61):
 
 
 
-def load_pc_bev(file_path, split): # filename is the same as load_pc
+def load_pc_bev(file_path, split, args): # filename is the same as load_pc
     pc = np.fromfile(file_path, dtype=np.float32).reshape(-1,3) # for kitti360_voxel
     bev = generate_bev_from_pc(pc, w=200, max_thd=100)
     # ==== bev
     bev = Image.fromarray(bev).convert('RGB')
     # bev.show()
     (_w,_h) = bev.size
-    assert opt.bev_resize <= 1
-    resize_ratio = random.uniform(opt.bev_resize, 2-opt.bev_resize)
+    assert args.bev_resize <= 1
+    resize_ratio = random.uniform(args.bev_resize, 2-args.bev_resize)
     resize_size = int(resize_ratio*min(_w,_h))
-    assert resize_size >= opt.bev_cropsize
+    assert resize_size >= args.bev_cropsize
 
-    if opt.bev_resize_mode == 'nearest':
+    if args.bev_resize_mode == 'nearest':
         resize_mode = InterpolationMode.NEAREST
-    elif opt.bev_resize_mode == 'bilinear':
+    elif args.bev_resize_mode == 'bilinear':
         resize_mode = InterpolationMode.BILINEAR
     else:
         raise NotImplementedError
     
-    if opt.bev_rotate_mode == 'nearest':
+    if args.bev_rotate_mode == 'nearest':
         rotate_mode = InterpolationMode.NEAREST
-    elif opt.bev_rotate_mode == 'bilinear':
+    elif args.bev_rotate_mode == 'bilinear':
         rotate_mode = InterpolationMode.BILINEAR
     else:
         raise NotImplementedError
@@ -412,51 +438,51 @@ def load_pc_bev(file_path, split): # filename is the same as load_pc
     if split == 'train':
         tf = TVT.Compose([
             TVT.Resize(resize_size, interpolation=resize_mode, antialias=True),
-            TVT.RandomRotation(opt.bev_rotate, interpolation=rotate_mode),
-            TVT.CenterCrop(opt.bev_cropsize),
-            TVT.ColorJitter(brightness=opt.bev_jitter, contrast=opt.bev_jitter, saturation=opt.bev_jitter, hue=min(0.5, opt.bev_jitter)),
+            TVT.RandomRotation(args.bev_rotate, interpolation=rotate_mode),
+            TVT.CenterCrop(args.bev_cropsize),
+            TVT.ColorJitter(brightness=args.bev_jitter, contrast=args.bev_jitter, saturation=args.bev_jitter, hue=min(0.5, args.bev_jitter)),
             TVT.ToTensor(),
-            TVT.Normalize(mean=opt.bev_mean, std=opt.bev_std)
+            TVT.Normalize(mean=args.bev_mean, std=args.bev_std)
         ])
     elif split == 'test':
         tf = TVT.Compose([
             TVT.Resize(resize_size, interpolation=resize_mode, antialias=True),
-            TVT.CenterCrop(opt.bev_cropsize),
+            TVT.CenterCrop(args.bev_cropsize),
             TVT.ToTensor(),
-            TVT.Normalize(mean=opt.bev_mean, std=opt.bev_std)
+            TVT.Normalize(mean=args.bev_mean, std=args.bev_std)
         ])
     else:
         raise NotImplementedError
     bev = tf(bev)
     # # ---- DEBUG:viz
-    # bev = bev*opt.bev_std + opt.bev_mean
+    # bev = bev*args.bev_std + args.bev_mean
     # bev = TVT.ToPILImage()(bev)
     # bev.show()
     return pc, bev
 
 
 
-def load_pc_sph(file_path, split): # filename is the same as load_pc
+def load_pc_sph(file_path, split, args): # filename is the same as load_pc
     pc = np.fromfile(file_path, dtype=np.float32).reshape(-1,3) # for kitti360_voxel
-    sph = generate_sph_from_pc(pc, w=361, h=61)
+    sph = generate_sph_from_pc(pc, w=361, h=61, args=args)
     # ==== sph
     sph = Image.fromarray(sph).convert('RGB')
     (_w,_h) = sph.size
-    assert opt.sph_resize <= 1
-    resize_ratio = random.uniform(opt.sph_resize, 2-opt.sph_resize)
+    assert args.sph_resize <= 1
+    resize_ratio = random.uniform(args.sph_resize, 2-args.sph_resize)
     resize_size = int(resize_ratio*min(_w,_h))
     if split == 'train':
         tf = TVT.Compose([
             TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST, antialias=True),
-            TVT.ColorJitter(brightness=opt.sph_jitter, contrast=opt.sph_jitter, saturation=opt.sph_jitter, hue=min(0.5, opt.sph_jitter)),
+            TVT.ColorJitter(brightness=args.sph_jitter, contrast=args.sph_jitter, saturation=args.sph_jitter, hue=min(0.5, args.sph_jitter)),
             TVT.ToTensor(),
-            TVT.Normalize(mean=opt.sph_mean, std=opt.sph_std)
+            TVT.Normalize(mean=args.sph_mean, std=args.sph_std)
         ])
     elif split == 'test':
         tf = TVT.Compose([
             TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST, antialias=True),
             TVT.ToTensor(),
-            TVT.Normalize(mean=opt.sph_mean, std=opt.sph_std)
+            TVT.Normalize(mean=args.sph_mean, std=args.sph_std)
         ])
     else:
         raise NotImplementedError
@@ -549,7 +575,7 @@ def get_datapaths_from_sample_token(nusc, sample_token):
 
 
 
-def load_sensordata_from_sampletoken(nusc, sample_token):
+def load_sensordata_from_sampletoken(nusc, sample_token, args):
     sample = nusc.get('sample', sample_token)
     sensornames = ['LIDAR_TOP', 
                    'CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 
@@ -570,7 +596,7 @@ def load_sensordata_from_sampletoken(nusc, sample_token):
             pcpath[-2] += f'_voxel{1}'
             pcpath = '/'.join(pcpath)
             pc = np.load(pcpath, allow_pickle=True)
-            pc = sparse_quantize(coordinates=pc, quantization_size=opt.quant_size)
+            pc = sparse_quantize(coordinates=pc, quantization_size=args.quant_size)
             sensordatas['LIDAR_TOP'] = pc
             
             sensordatas['RANGE_DATA'] = torch.empty(0)
@@ -592,7 +618,7 @@ def load_sensordata_from_sampletoken(nusc, sample_token):
             datapath[-2] += f'_size{256}' 
             datapath = '/'.join(datapath)
             image = Image.open(datapath)
-            tf = TVT.Compose([TVT.Resize((opt.q_resize, opt.q_resize), antialias=True),
+            tf = TVT.Compose([TVT.Resize((args.q_resize, args.q_resize), antialias=True),
                               TVT.ToTensor(),
                               TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                               ])
@@ -601,7 +627,7 @@ def load_sensordata_from_sampletoken(nusc, sample_token):
 
     # Stack
     qcam = [] 
-    camnames = opt.camnames.split('_')
+    camnames = args.camnames.split('_')
     for camname in camnames:
         if camname == 'f':
             qcam.append(sensordatas['CAM_FRONT'])
@@ -715,16 +741,17 @@ class NuScenesBaseDataset(data.Dataset):
     """
     def __init__(self, args, datasets_folder="datasets", dataset_name="pitts30k", split="train"):
         super().__init__()
+        self.args = args
         self.dataset_name = dataset_name
         
-        self.resize = args.resize
-        self.test_method = args.test_method
+        self.resize = self.args.resize
+        self.test_method = self.args.test_method
         self.split = split
         
 
         # ==========
         # Use  v1.0-trainval_singapore-onenorth  training
-        dataroot = opt.dataroot
+        dataroot = self.args.dataroot
         if split == 'train':
             selectlocationlist = trainselectlocationlist
             selectversion = 'v1.0-trainval'
@@ -748,7 +775,7 @@ class NuScenesBaseDataset(data.Dataset):
         }
         for isample, sample in enumerate(self.nusc.sample):
             if split == 'train':
-                if isample % opt.traindownsample!= 0: # using 1/2 samples for training
+                if isample % self.args.traindownsample != 0: # using 1/2 samples for training
                     continue
             elif split == 'test': # using all samples for testing
                 None
@@ -792,7 +819,7 @@ class NuScenesBaseDataset(data.Dataset):
         #         qimage0203names = qimage0203names[int(len(qimage0203names)*train_ratio):]
         #     print(f"Number of q samples in {selectlocation}: {len(qimage0203names)}")
         #     for i_sample, qimage0203name in enumerate(qimage0203names):
-        #         if i_sample % opt.traindownsample != 0: # downsample to accelerate training
+        #         if i_sample % self.args.traindownsample != 0: # downsample to accelerate training
         #             continue
         #         qpcpath = os.path.join(qpcdir, qimage0203name.replace('.png','.bin'))
         #         qimage02path = os.path.join(qimage02dir, qimage0203name.replace('.png','.png'))
@@ -829,7 +856,7 @@ class NuScenesBaseDataset(data.Dataset):
         scale = 1
         zoom = 20   # higher is closer
         size = 320
-        # maptype = opt.maptype
+        # maptype = self.args.maptype
         # maptype = 'satellite'
         # maptype = 'osm'
 
@@ -852,9 +879,9 @@ class NuScenesBaseDataset(data.Dataset):
             db_roadmap_dir = os.path.join(dataroot, f'aerial_{selectversion}_{selectlocation}_{scale}_{zoom}_{size}_roadmap')
             dbnames = os.listdir(db_satellite_dir)
             dbnames = sorted(dbnames)
-            if share_db == True:
+            if self.args.share_db == True:
                 dbnames = dbnames
-            elif share_db == False:
+            elif self.args.share_db == False:
                 dbnames = dbnames
                 # if split == 'train':
                 #     dbnames = dbnames[:int(len(dbnames)*train_ratio)]
@@ -862,7 +889,7 @@ class NuScenesBaseDataset(data.Dataset):
                 #     dbnames = dbnames[int(len(dbnames)*train_ratio):]
             for i_dbname, dbname in enumerate(dbnames):
                 if split == 'train':
-                    if i_dbname % opt.traindownsample != 0: 
+                    if i_dbname % self.args.traindownsample != 0: 
                         continue
                 elif split == 'test':
                     None
@@ -891,9 +918,9 @@ class NuScenesBaseDataset(data.Dataset):
 
 
         # Find positive and negative 
-        knn = NearestNeighbors(n_jobs=opt.num_workers+1)
+        knn = NearestNeighbors(n_jobs=self.args.num_workers + 1)
         knn.fit(self.database_utms)
-        softposthd = opt.val_positive_dist_threshold  # 25
+        softposthd = self.args.val_positive_dist_threshold  # 25
         self.soft_positives_per_query = knn.radius_neighbors(self.queries_utms,
                                                              radius=softposthd,
                                                              return_distance=False)
@@ -910,7 +937,7 @@ class NuScenesBaseDataset(data.Dataset):
             # query_image = load_qimage(datapath=self.database_queries_infos[index]['qimage0203path'],split=self.split) 
             # query_pc, query_bev = load_pc_bev(file_path=self.database_queries_infos[index]['qpcpath'],split=self.split)
             sampletoken = self.database_queries_infos[index]['sampletoken']
-            query_image, query_sph, query_bev, query_pc = load_sensordata_from_sampletoken(self.nusc, sampletoken)
+            query_image, query_sph, query_bev, query_pc = load_sensordata_from_sampletoken(self.nusc, sampletoken, self.args)
             query_location = self.database_queries_infos[index]['location']
             query_eastnorth = torch.tensor([self.database_queries_infos[index]['east'], self.database_queries_infos[index]['north']]).float()
             db_location = None
@@ -923,13 +950,13 @@ class NuScenesBaseDataset(data.Dataset):
             query_pc, query_bev, query_sph = torch.empty(0), torch.empty(0), torch.empty(0)
             query_location = None
             query_eastnorth = torch.empty(0)
-            maptype = opt.maptype.split('_')
+            maptype = self.args.maptype.split('_')
             db_map = []
             for each_maptype in maptype:
                 if each_maptype == 'satellite':
-                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_satellite_path'], split=self.split)
+                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_satellite_path'], split=self.split, args=self.args)
                 elif each_maptype == 'roadmap':
-                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_roadmap_path'], split=self.split)
+                    each_db_map = load_dbimage(datapath=self.database_queries_infos[index]['db_roadmap_path'], split=self.split, args=self.args)
                 db_map.append(each_db_map) 
             db_map = torch.stack(db_map, 0) # [nmap,3,h,w]
             db_location = self.database_queries_infos[index]['location']
@@ -1018,7 +1045,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         # Find hard_positives_per_query, which are within train_positives_dist_threshold (10 meters)
         knn = NearestNeighbors(n_jobs=-1)
         knn.fit(self.database_utms)
-        hardposthd = opt.train_positives_dist_threshold
+        hardposthd = self.args.train_positives_dist_threshold
         self.hard_positives_per_query = list(knn.radius_neighbors(self.queries_utms,
                                              radius=hardposthd,  # 10 meters
                                              return_distance=False))
@@ -1070,7 +1097,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         
         # sampletoken = self.database_queries_infos[query_index]['sampletoken']
         sampletoken = self.queries_infos[query_index]['sampletoken']
-        query_image, query_sph, query_bev, query_pc = load_sensordata_from_sampletoken(self.nusc, sampletoken)
+        query_image, query_sph, query_bev, query_pc = load_sensordata_from_sampletoken(self.nusc, sampletoken, self.args)
         # query_location = self.queries_infos[query_index]['location']
         query_eastnorth = torch.tensor([self.queries_infos[query_index]['east'], self.queries_infos[query_index]['north']]).float()
         # query_pc = torch.empty(0)
@@ -1086,16 +1113,16 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         # negative_db_roadmap_map = torch.stack(negative_db_roadmap_map, 0)  # [nneg,3,h,w]
         # negative_db_map = torch.stack([negative_db_satellite_map, negative_db_roadmap_map], 1)  # [nneg,nmap,3,h,w]
 
-        maptype = opt.maptype.split('_')
+        maptype = self.args.maptype.split('_')
         positive_db_map = []
         negative_db_map = []
         for each_maptype in maptype:
             if each_maptype == 'satellite':
-                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_satellite_path'],split=self.split)
-                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_satellite_path'],split=self.split) for e in neg_indexes]
+                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_satellite_path'], split=self.split, args=self.args)
+                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_satellite_path'], split=self.split, args=self.args) for e in neg_indexes]
             elif each_maptype == 'roadmap':
-                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_roadmap_path'],split=self.split)
-                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_roadmap_path'],split=self.split) for e in neg_indexes]
+                each_positive_db_map = load_dbimage(datapath=self.database_infos[best_positive_index]['db_roadmap_path'], split=self.split, args=self.args)
+                each_negative_db_map = [load_dbimage(datapath=self.database_infos[e]['db_roadmap_path'], split=self.split, args=self.args) for e in neg_indexes]
             each_negative_db_map = torch.stack(each_negative_db_map, 0)  # [nneg,3,h,w]
             positive_db_map.append(each_positive_db_map)
             negative_db_map.append(each_negative_db_map)
@@ -1165,7 +1192,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         # RAMEfficient2DMatrix is RAM efficient for full database mining.
         cache = RAMEfficient2DMatrix(cache_shape, dtype=np.float32) # [db+q, c]
         with torch.no_grad():
-            for images, indexes in tqdm(subset_dl):
+            for images, indexes in _progress(subset_dl, args=args, desc="cache"):
                 images = images.to(args.device)
                 features = model(images)
                 cache[indexes.numpy()] = features.cpu().numpy()
@@ -1184,8 +1211,17 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         model = model.eval()
         modelq = modelq.eval()
 
-        subset_ds_db = Subset(subset_ds.dataset, list(range(subset_ds.dataset.database_num)))
-        subset_ds_q = Subset(subset_ds.dataset, list(range(subset_ds.dataset.database_num, len(subset_ds.dataset))))
+        if isinstance(subset_ds, Subset):
+            parent_ds = subset_ds.dataset
+            subset_indices = [int(i) for i in subset_ds.indices]
+        else:
+            parent_ds = subset_ds
+            subset_indices = list(range(len(parent_ds)))
+        db_indices = [i for i in subset_indices if i < parent_ds.database_num]
+        q_indices = [i for i in subset_indices if i >= parent_ds.database_num]
+
+        subset_ds_db = Subset(parent_ds, db_indices)
+        subset_ds_q = Subset(parent_ds, q_indices)
         subset_dl_db = DataLoader(dataset=subset_ds_db, num_workers=args.num_workers,
                                  batch_size=args.infer_batch_size, shuffle=False,
                                  pin_memory=(args.device == "cuda"),
@@ -1200,13 +1236,13 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         # RAMEfficient2DMatrix is RAM efficient for full database mining.
         cache = RAMEfficient2DMatrix(cache_shape, dtype=np.float32) # [db+q, c]
         with torch.no_grad():
-            for data_dict, indexes in tqdm(subset_dl_db):
+            for data_dict, indexes in _progress(subset_dl_db, args=args, desc="cache/db"):
                 for _k, _v in data_dict.items():
                     if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
                 # data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
                 features = model(data_dict, mode='db')
                 cache[indexes.numpy()] = features['embedding'].cpu().numpy()
-            for data_dict, indexes in tqdm(subset_dl_q):
+            for data_dict, indexes in _progress(subset_dl_q, args=args, desc="cache/q"):
                 for _k, _v in data_dict.items():
                     if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
                 # data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
@@ -1262,7 +1298,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         cache = self.compute_cache(args, model, subset_ds, (len(self), args.features_dim))
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache)
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             
@@ -1290,7 +1326,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         cache = self.compute_cache(args, model, subset_ds, (len(self), args.features_dim))
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache)
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             # Choose 1000 random database images (neg_indexes)
@@ -1338,7 +1374,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         cache = self.compute_cache(args, model, subset_ds, cache_shape=(cache_length, args.features_dim)) 
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache) # query_features = cache[query_index + self.database_num]
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             
@@ -1382,7 +1418,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         cache = self.compute_cache_sep(args, model, subset_ds, cache_shape=(cache_length, args.features_dim), modelq=modelq) 
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes): # max-3911  min-1
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"): # max-3911  min-1
             query_features = self.get_query_features(query_index, cache) # query_features = cache[query_index + self.database_num]
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             

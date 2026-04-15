@@ -1,0 +1,9 @@
+data:
+  dataset: kitti360
+  dataset_name: kitti360
+  machine: 5080
+  camnames: "00"
+  maptype: satellite
+  traindownsample: 4
+  train_ratio: 0.85
+  read_pc: true

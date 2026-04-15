@@ -1,0 +1,35 @@
+trainer:
+  accelerator: gpu
+  devices: auto
+  strategy: auto
+  precision: 32-true
+  reload_dataloaders_every_n_epochs: 1
+  accumulate_grad_batches: 1
+  log_every_n_steps: 20
+  num_sanity_val_steps: 0
+  enable_model_summary: false
+
+model:
+  features_dim: 256
+  margin: 0.1
+  lr: 0.00001
+  lrdb: 0.00001
+  lrdino: 0.0
+  lrpc: 0.0001
+  lrutonia: 0.00001
+  tripletloss_weight: 1.0
+  otherloss_type: bce
+  otherloss_weight: 0.01
+  amp_dtype: none
+
+data:
+  train_batch_size: 2
+  infer_batch_size: 12
+  num_workers: 8
+  cache_refresh_rate: 4000
+  queries_per_epoch: 16000
+  neg_samples_num: 1000
+  negs_num_per_query: 10
+  val_positive_dist_threshold: 25
+  train_positives_dist_threshold: 10
+  recall_values: [1, 5, 10, 20]

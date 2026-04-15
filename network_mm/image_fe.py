@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class ImageFE(nn.Module):
-    def __init__(self, fe_type, layers=None):
+    def __init__(self, fe_type, layers=None, args=None):
         super().__init__()
         self.fe_type = fe_type
         if self.fe_type != 'dinov2_vitl14':
@@ -11,15 +11,16 @@ class ImageFE(nn.Module):
                 f"Query ImageFE now only supports 'dinov2_vitl14'; got {self.fe_type}"
             )
 
-        from tools.options import parse_arguments
-        opt = parse_arguments()
+        if args is None:
+            raise ValueError("ImageFE requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
 
         self.fe = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14')
         self.last_dim = 1024
-        self.target_blocks = [int(e) for e in opt.dino_extract_blocks.split('_')]
+        self.target_blocks = [int(e) for e in self.args.dino_extract_blocks.split('_')]
 
-        dino_mode = getattr(opt, 'unfreeze_dino_mode', 'frozen')
-        if opt.lrdino == 0.0:
+        dino_mode = getattr(self.args, 'unfreeze_dino_mode', 'frozen')
+        if self.args.lrdino == 0.0:
             dino_mode = 'frozen'
 
         for param in self.fe.parameters():

@@ -26,15 +26,16 @@ class UtoniaFE(nn.Module):
     points without valid projection use zeros (handled by Utonia's
     Causal Modality Blinding).
     """
-    def __init__(self, out_channels=256, planes=(64, 128, 256)):
+    def __init__(self, out_channels=256, planes=(64, 128, 256), args=None):
         super().__init__()
-        from tools.options import parse_arguments
-        opt = parse_arguments()
+        if args is None:
+            raise ValueError("UtoniaFE requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
 
         self.planes = planes
-        pretrained_name = getattr(opt, 'utonia_pretrained', 'none')
-        freeze_mode = getattr(opt, 'unfreeze_utonia_mode', 'frozen')
-        extract_stages = getattr(opt, 'utonia_extract_stages', '1_2_3')
+        pretrained_name = getattr(self.args, 'utonia_pretrained', 'none')
+        freeze_mode = getattr(self.args, 'unfreeze_utonia_mode', 'frozen')
+        extract_stages = getattr(self.args, 'utonia_extract_stages', '1_2_3')
         self.target_stages = [int(s) for s in extract_stages.split('_')]
 
         if pretrained_name != 'none':
@@ -115,7 +116,7 @@ class UtoniaFE(nn.Module):
 
             # lrutonia=0 overrides freeze_mode → fully freeze PTv3 so no
             # grad is computed and the optimizer gate in train.py drops it.
-            lrutonia = getattr(opt, 'lrutonia', 0.0)
+            lrutonia = getattr(self.args, 'lrutonia', 0.0)
             if lrutonia == 0.0:
                 for param in self.ptv3.parameters():
                     param.requires_grad = False
@@ -155,7 +156,7 @@ class UtoniaFE(nn.Module):
             with torch.no_grad():
                 c = data_dict['coord']
                 g = data_dict['grid_coord']
-                logging.info(
+                logging.debug(
                     f"[Utonia in] coord range=[{c.min().item():.2f},{c.max().item():.2f}] "
                     f"mean={c.mean().item():.2f} std={c.std().item():.2f}  "
                     f"grid range=[{g.min().item()},{g.max().item()}]  "

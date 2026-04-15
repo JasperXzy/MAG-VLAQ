@@ -7,20 +7,15 @@ import torch.nn as nn
 from network_mm.ffns import FCODE
 
 
-
-from tools.options import parse_arguments
-opt = parse_arguments()
-
-
-
-
-
 class DiffBlock(nn.Module):
-    def __init__(self, dim, ode_dim):
+    def __init__(self, dim, ode_dim, args=None):
         super().__init__()
+        if args is None:
+            raise ValueError("DiffBlock requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
         self.blocks = nn.ModuleList()
 
-        diff_type = opt.diff_type
+        diff_type = self.args.diff_type
 
 
         for e in diff_type.split('_'):
@@ -28,7 +23,7 @@ class DiffBlock(nn.Module):
             if e == None:
                 None
             elif e == 'fcode':
-                self.blocks.append(FCODE(dim,act))
+                self.blocks.append(FCODE(dim, act, args=self.args))
             else:
                 raise NotImplementedError
 

@@ -1,10 +1,24 @@
 
 import os
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning, message=".*xFormers is available.*")
-warnings.filterwarnings("ignore", category=UserWarning, message=".*is_fx_tracing.*")
+warnings.filterwarnings("ignore", message=".*xFormers is not available.*")
+warnings.filterwarnings("ignore", message=".*xFormers is available.*")
+warnings.filterwarnings("ignore", message=".*is_fx_tracing.*")
+warnings.filterwarnings("ignore", message=r".*isinstance\(treespec, LeafSpec\).*")
+warnings.filterwarnings("ignore", message=r".*Found .* module\(s\) in eval mode at the start of training.*")
+warnings.filterwarnings("ignore", message=".*does not have many workers.*")
 import logging
-for _logger_name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection", "hpack"):
+for _logger_name in (
+    "httpx",
+    "httpcore",
+    "httpcore.http11",
+    "httpcore.connection",
+    "hpack",
+    "torch.fx._symbolic_trace",
+    "pytorch_lightning.utilities._pytree",
+    "pytorch_lightning.loops.fit_loop",
+    "pytorch_lightning.trainer.connectors.data_connector",
+):
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
 os.environ["OMP_NUM_THREADS"] = '16'
 
@@ -179,7 +193,7 @@ def parse_arguments():
             args.dataroot = '/home/jasperxzy/Datasets/cmvpr/kitti360/KITTI-360'
         elif args.dataset == 'nuscenes': 
             args.dataroot = '/home/jasperxzy/Datasets/radar/nuscenes'
-        args.num_workers = 16
+        args.num_workers = 8
 
 
     #####################################
@@ -242,9 +256,8 @@ def get_datetime():
     return time.strftime("%Y%m%d_%H%M")
 
 
-def logging_info(message):
-    opt = parse_arguments()
-    with open(f'results/{opt.exp_name}.txt', 'a') as f:
+def logging_info(args, message):
+    with open(f'results/{args.exp_name}.txt', 'a') as f:
         f.write(message + '\n')
         # print(message)
     with open('results.txt', 'a') as f:
@@ -252,25 +265,23 @@ def logging_info(message):
 
 
 
-def logging_init():
-    opt = parse_arguments()
+def logging_init(args):
     if not os.path.exists('results'):
         os.makedirs('results')
-    with open(f'results/{opt.exp_name}.txt', 'w') as f:
+    with open(f'results/{args.exp_name}.txt', 'w') as f:
         f.write(get_datetime())
         f.write('\n')
-        f.write(f'{opt.exp_name}\n')
+        f.write(f'{args.exp_name}\n')
     with open('results.txt', 'w') as f:
         f.write(get_datetime())
         f.write('\n')
-        f.write(f'{opt.exp_name}\n')
+        f.write(f'{args.exp_name}\n')
 
 
 
 
-def logging_end():
-    opt = parse_arguments()
-    with open(f'results/{opt.exp_name}.txt', 'a') as f:
+def logging_end(args):
+    with open(f'results/{args.exp_name}.txt', 'a') as f:
         f.write('\n')
         f.write(get_datetime())
     with open('results.txt', 'a') as f:

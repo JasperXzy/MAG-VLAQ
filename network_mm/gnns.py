@@ -4,9 +4,6 @@ import torch
 import torch.nn as nn
 from torchdiffeq import odeint_adjoint, odeint
 
-from tools.options import parse_arguments
-opt = parse_arguments()
-
 
 class ODEFunc(nn.Module):
     def __init__(self, func):
@@ -87,16 +84,19 @@ class Beltrami(nn.Module):
     
 
 class BeltramiODE(nn.Module):
-    def __init__(self, dim, k):
+    def __init__(self, dim, k, args=None):
         super().__init__()
+        if args is None:
+            raise ValueError("BeltramiODE requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
         func = Beltrami(dim=dim, k=k)
         self.odefunc = ODEFunc(func)
 
     def forward(self, x):
         t = torch.tensor([0,1], dtype=torch.float32, device=x.device, requires_grad=False)
         output = odeint_adjoint(self.odefunc, x, t, 
-                        method=opt.odeint_method,
-                        rtol=opt.tol, atol=opt.tol)
+                        method=self.args.odeint_method,
+                        rtol=self.args.tol, atol=self.args.tol)
         output = output[-1]
 
         return output

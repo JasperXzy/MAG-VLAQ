@@ -7,17 +7,6 @@ import torch.nn as nn
 import matplotlib
 matplotlib.use('agg')
 
-
-from tools.options import parse_arguments
-opt = parse_arguments()
-
-
-
-
-
-
-
-
 def compute_bcemat(eastnorthdist_mat, positive_thd=10, negative_thd=25):
     bcemat = torch.zeros_like(eastnorthdist_mat, dtype=torch.float32)-1 # default -1
     bcemat[eastnorthdist_mat < positive_thd] = 0 # 0 for closer, 1 for farther
@@ -51,7 +40,9 @@ def compute_loss(featsdist_mat, bcemat, otherloss_type):
     return loss
 
 
-def compute_other_loss(feats_ground, feats_aerial, data_dict, positive_thd=10, negative_thd=25):
+def compute_other_loss(feats_ground, feats_aerial, data_dict, positive_thd=10, negative_thd=25, args=None):
+    if args is None:
+        raise ValueError("compute_other_loss requires explicit args; parse CLI/config in the entrypoint.")
 
     feats_Gembed = feats_ground['embedding'] # [b,c]
     feats_Gimageorg = feats_ground['imagevec_org']
@@ -98,16 +89,16 @@ def compute_other_loss(feats_ground, feats_aerial, data_dict, positive_thd=10, n
 
 
 
-    loss_Aembed_Aembed = compute_loss(featsdist_Aembed_Aembed, bcemat_Aembed_Aembed, opt.otherloss_type)
-    loss_Gembed_AembedGembed = compute_loss(featsdist_Gembed_AembedGembed, bcemat_Gembed_AembedGembed, opt.otherloss_type)
-    loss_Gimageorg_AembedGimageorg = compute_loss(featsdist_Gimageorg_AembedGimageorg, bcemat_Gimageorg_AembedGimageorg, opt.otherloss_type)
-    loss_Gvoxorg_AembedGvoxorg = compute_loss(featsdist_Gvoxorg_AembedGvoxorg, bcemat_Gvoxorg_AembedGvoxorg, opt.otherloss_type)
+    loss_Aembed_Aembed = compute_loss(featsdist_Aembed_Aembed, bcemat_Aembed_Aembed, args.otherloss_type)
+    loss_Gembed_AembedGembed = compute_loss(featsdist_Gembed_AembedGembed, bcemat_Gembed_AembedGembed, args.otherloss_type)
+    loss_Gimageorg_AembedGimageorg = compute_loss(featsdist_Gimageorg_AembedGimageorg, bcemat_Gimageorg_AembedGimageorg, args.otherloss_type)
+    loss_Gvoxorg_AembedGvoxorg = compute_loss(featsdist_Gvoxorg_AembedGvoxorg, bcemat_Gvoxorg_AembedGvoxorg, args.otherloss_type)
 
     loss = (
-        + loss_Aembed_Aembed * opt.otherloss_weight  
-        + loss_Gembed_AembedGembed * opt.otherloss_weight 
-        + loss_Gimageorg_AembedGimageorg * opt.otherloss_weight 
-        + loss_Gvoxorg_AembedGvoxorg * opt.otherloss_weight
+        + loss_Aembed_Aembed * args.otherloss_weight
+        + loss_Gembed_AembedGembed * args.otherloss_weight
+        + loss_Gimageorg_AembedGimageorg * args.otherloss_weight
+        + loss_Gvoxorg_AembedGvoxorg * args.otherloss_weight
     )
 
     return loss
@@ -116,9 +107,11 @@ def compute_other_loss(feats_ground, feats_aerial, data_dict, positive_thd=10, n
 
 
 if __name__ == '__main__':
+    from tools.options import parse_arguments
 
     feats_ground = torch.load('feats_ground.pth')
     feats_aerial = torch.load('feats_aerial.pth')
     data_dict = torch.load('data_dict.pth')
 
-    loss = compute_other_loss(feats_ground, feats_aerial, data_dict)
+    args = parse_arguments()
+    loss = compute_other_loss(feats_ground, feats_aerial, data_dict, args=args)

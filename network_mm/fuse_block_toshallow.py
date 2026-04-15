@@ -4,12 +4,12 @@ import torch.nn.functional as F
 from network_mm.diff_block import DiffBlock
 from layers.sparse_utils import sparse_global_avg_pool
 
-from tools.options import parse_arguments
-opt = parse_arguments()
-
 class FuseBlockToShallow(nn.Module):
-    def __init__(self, dims=[256,256,256], img_dims=[64,128,256], vox_dims=[64,128,256], bev_dims=[64,128,256]):
+    def __init__(self, dims=[256,256,256], img_dims=[64,128,256], vox_dims=[64,128,256], bev_dims=[64,128,256], args=None):
         super().__init__()
+        if args is None:
+            raise ValueError("FuseBlockToShallow requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
 
         self.dims = dims
         self.img_dims = img_dims
@@ -20,7 +20,7 @@ class FuseBlockToShallow(nn.Module):
         self.updimsimg = nn.ModuleList()
         self.updimsvox = nn.ModuleList()
         for i in range(len(dims)):
-            diffblock = DiffBlock(dim=dims[-1], ode_dim=dims[-1])
+            diffblock = DiffBlock(dim=dims[-1], ode_dim=dims[-1], args=self.args)
             self.blocks.append(diffblock)
             if self.img_dims[i] == dims[-1]:
                 self.updimsimg.append(nn.Identity())
@@ -40,12 +40,12 @@ class FuseBlockToShallow(nn.Module):
         imageveclist = [F.adaptive_avg_pool2d(e, output_size=1).flatten(1) for e in imagemaplist] 
         bevveclist = [F.adaptive_avg_pool2d(e, output_size=1).flatten(1) for e in bevmaplist]
 
-        if 'cde' in opt.diff_type:
+        if 'cde' in self.args.diff_type:
             # ==== cde
-            if opt.diff_direction == 'forward':
+            if self.args.diff_direction == 'forward':
                 imageveclist = [self.updimsimg[i](imageveclist[i]) for i in range(len(imageveclist))]
                 bevveclist = [self.updimsbev[i](bevveclist[i]) for i in range(len(bevveclist))]
-            elif opt.diff_direction == 'backward':
+            elif self.args.diff_direction == 'backward':
                 imageveclist = [self.updimsimg[i](imageveclist[i]) for i in range(len(imageveclist)-1,-1,-1)]
                 bevveclist = [self.updimsbev[i](bevveclist[i]) for i in range(len(bevveclist)-1,-1,-1)]
             imageveclist = torch.stack(imageveclist, dim=1) # [b,seq,c]
@@ -56,9 +56,9 @@ class FuseBlockToShallow(nn.Module):
             # ==== deep to shallow
             fusevec = 0 
             for i in range(len(self.dims)):
-                if opt.diff_direction == 'forward':
+                if self.args.diff_direction == 'forward':
                     i = i
-                elif opt.diff_direction == 'backward':
+                elif self.args.diff_direction == 'backward':
                     i = len(self.dims)-1-i
                 imagevec = imageveclist[i]
                 bevvec = bevveclist[i]
@@ -85,12 +85,12 @@ class FuseBlockToShallow(nn.Module):
         imageveclist = [F.adaptive_avg_pool2d(e, output_size=1).flatten(1) for e in imagemaplist] 
         voxveclist = [sparse_global_avg_pool(e) for e in voxmaplist]
 
-        if 'cde' in opt.diff_type:
+        if 'cde' in self.args.diff_type:
             # ==== cde
-            if opt.diff_direction == 'forward':
+            if self.args.diff_direction == 'forward':
                 imageveclist = [self.updimsimg[i](imageveclist[i]) for i in range(len(imageveclist))]
                 voxveclist = [self.updimsvox[i](voxveclist[i]) for i in range(len(voxveclist))]
-            elif opt.diff_direction == 'backward':
+            elif self.args.diff_direction == 'backward':
                 imageveclist = [self.updimsimg[i](imageveclist[i]) for i in range(len(imageveclist)-1,-1,-1)]
                 voxveclist = [self.updimsvox[i](voxveclist[i]) for i in range(len(voxveclist)-1,-1,-1)]
             imageveclist = torch.stack(imageveclist, dim=1) # [b,seq,c]
@@ -102,9 +102,9 @@ class FuseBlockToShallow(nn.Module):
             # ==== deep to shallow
             fusevec = 0 
             for i in range(len(self.dims)):
-                if opt.diff_direction == 'forward':
+                if self.args.diff_direction == 'forward':
                     i = i
-                elif opt.diff_direction == 'backward':
+                elif self.args.diff_direction == 'backward':
                     i = len(self.dims)-1-i
                 imagevec = imageveclist[i]
                 voxvec = voxveclist[i]

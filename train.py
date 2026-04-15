@@ -1,6 +1,5 @@
 
 from tools import options as parser
-opt = parser.parse_arguments()
 from tools.options import logging_info, logging_init, get_datetime
 
 import math
@@ -157,8 +156,7 @@ def main():
 
     # Only rank 0 handles logging setup and file I/O
     if is_main_process():
-        if use_ddp:
-            logging_init()
+        logging_init(args)
         commons.setup_logging(args.save_dir)
         logging.getLogger('PIL').setLevel(logging.WARNING)
         logging.info(f"Arguments: {args}")
@@ -178,44 +176,44 @@ def main():
     if is_main_process():
         logging.debug(f"Loading dataset {args.dataset_name} from folder {args.datasets_folder}")
 
-    if opt.dataset == 'kitti360':
+    if args.dataset == 'kitti360':
         triplets_ds = KITTI360TripletsDataset(args, args.datasets_folder, args.dataset_name, "train", args.negs_num_per_query)
         test_ds = KITTI360BaseDataset(args, args.datasets_folder, args.dataset_name, "test")
-    elif opt.dataset == 'nuscenes':
+    elif args.dataset == 'nuscenes':
         triplets_ds = NuScenesTripletsDataset(args, args.datasets_folder, args.dataset_name, "train", args.negs_num_per_query)
         test_ds = NuScenesBaseDataset(args, args.datasets_folder, args.dataset_name, "test")
 
     if is_main_process():
         logging.info(f"Train query set: {triplets_ds}")
-        logging_info(f"Train query set: {triplets_ds}")
+        logging_info(args, f"Train query set: {triplets_ds}")
         logging.info(f"Test set: {test_ds}")
-        logging_info(f"Test set: {test_ds}")
+        logging_info(args, f"Test set: {test_ds}")
 
 
     #---- model db
-    model = DBVanilla2D(mode='db', dim=args.features_dim)
+    model = DBVanilla2D(mode='db', dim=args.features_dim, args=args)
 
     #---- model q
-    modelq = MM()
+    modelq = MM(args=args)
 
     if is_main_process():
         num_params_q = sum(p.numel() for p in modelq.parameters())
         logging.info(f"Number of parameters in modelq: {num_params_q}")
-        logging_info(f"Number of parameters in modelq: {num_params_q}")
+        logging_info(args, f"Number of parameters in modelq: {num_params_q}")
         num_params_db = sum(p.numel() for p in model.parameters())
         logging.info(f"Number of parameters in model: {num_params_db}")
-        logging_info(f"Number of parameters in model: {num_params_db}")
+        logging_info(args, f"Number of parameters in model: {num_params_db}")
 
     # Move models to the correct device
     model = model.to(args.device)
     modelq = modelq.to(args.device)
 
     if is_main_process():
-        logging_info(f"Model: {model.__class__.__name__}")
+        logging_info(args, f"Model: {model.__class__.__name__}")
         logging.info(f"Model: {model.__class__.__name__}")
-        logging_info(f"Modelq: {modelq.__class__.__name__}")
+        logging_info(args, f"Modelq: {modelq.__class__.__name__}")
         logging.info(f"Modelq: {modelq.__class__.__name__}")
-        logging_info(f"Device: {args.device}")
+        logging_info(args, f"Device: {args.device}")
         logging.info(f"Device: {args.device}")
 
 
@@ -306,9 +304,9 @@ def main():
         num_params_db = sum(pp.numel() for p in optimizer.param_groups for pp in p['params'])
         num_params_q = sum(pp.numel() for p in optimizerq.param_groups for pp in p['params'])
         logging.info(f"Number of parameters in optimizerdb: {num_params_db}")
-        logging_info(f"Number of parameters in optimizerdb: {num_params_db}")
+        logging_info(args, f"Number of parameters in optimizerdb: {num_params_db}")
         logging.info(f"Number of parameters in optimizerq: {num_params_q}")
-        logging_info(f"Number of parameters in optimizerq: {num_params_q}")
+        logging_info(args, f"Number of parameters in optimizerq: {num_params_q}")
 
         # Phase 0 instrumentation: per param_group lr + Utonia trainable ratio
         for i, g in enumerate(params_q):
@@ -375,9 +373,9 @@ def main():
 
             # ============ Create training DataLoader ============
             triplets_ds.is_inference = False
-            if opt.dataset == 'kitti360':
+            if args.dataset == 'kitti360':
                 collate_fn = kitti360_collate_fn
-            elif opt.dataset == 'nuscenes':
+            elif args.dataset == 'nuscenes':
                 collate_fn = nuscenes_collate_fn
 
             if use_ddp:
@@ -403,7 +401,14 @@ def main():
             if is_main_process():
                 logging.info('start triplet training')
 
-            for data_dict, triplets_local_indexes, _ in tqdm(triplets_dl, disable=not is_main_process()):
+            for data_dict, triplets_local_indexes, _ in tqdm(
+                triplets_dl,
+                desc="train",
+                disable=not is_main_process(),
+                dynamic_ncols=True,
+                leave=False,
+                mininterval=1.0,
+            ):
 
                 for _k, _v in data_dict.items():
                     if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
@@ -420,15 +425,16 @@ def main():
 
                     loss = 0
                     otherloss = compute_other_loss(feats_ground, feats_aerial, data_dict,
-                                                   positive_thd=opt.train_positives_dist_threshold,
-                                                   negative_thd=opt.val_positive_dist_threshold)
+                                                   positive_thd=args.train_positives_dist_threshold,
+                                                   negative_thd=args.val_positive_dist_threshold,
+                                                   args=args)
                     loss += otherloss
 
                     # cat
                     feats = torch.cat((feats_ground_embed, feats_aerial_embed), dim=1)
                     feats = feats.view(-1, args.features_dim)
                     triplet_loss = compute_loss(args, criterion_triplet, triplets_local_indexes, feats)
-                    loss += triplet_loss * opt.tripletloss_weight
+                    loss += triplet_loss * args.tripletloss_weight
                     del feats
 
                 optimizer.zero_grad()
@@ -465,9 +471,9 @@ def main():
                 best_r1r5r10ep[2] = recalls[2]
                 best_r1r5r10ep[3] = epoch_num
             logging.info(f"Now : R@1 = {recalls[0]:.1f}   R@5 = {recalls[1]:.1f}   R@10 = {recalls[2]:.1f}   epoch = {epoch_num:d}")
-            logging_info(f"Now : R@1 = {recalls[0]:.1f}   R@5 = {recalls[1]:.1f}   R@10 = {recalls[2]:.1f}   epoch = {epoch_num:d}")
+            logging_info(args, f"Now : R@1 = {recalls[0]:.1f}   R@5 = {recalls[1]:.1f}   R@10 = {recalls[2]:.1f}   epoch = {epoch_num:d}")
             logging.info(f"Best: R@1 = {best_r1r5r10ep[0]:.1f}   R@5 = {best_r1r5r10ep[1]:.1f}   R@10 = {best_r1r5r10ep[2]:.1f}   epoch = {best_r1r5r10ep[3]:d}")
-            logging_info(f"Best: R@1 = {best_r1r5r10ep[0]:.1f}   R@5 = {best_r1r5r10ep[1]:.1f}   R@10 = {best_r1r5r10ep[2]:.1f}   epoch = {best_r1r5r10ep[3]:d}")
+            logging_info(args, f"Best: R@1 = {best_r1r5r10ep[0]:.1f}   R@5 = {best_r1r5r10ep[1]:.1f}   R@10 = {best_r1r5r10ep[2]:.1f}   epoch = {best_r1r5r10ep[3]:d}")
 
             # Save checkpoint (always save unwrapped state_dict)
             util.save_checkpoint(args, {
@@ -480,9 +486,9 @@ def main():
                 "not_improved_num": not_improved_num
             }, is_best, filename=f"ep@{epoch_num}__r1@{recalls[0]:.0f}.pth")
 
-            logging_info(f'{get_datetime()}')
+            logging_info(args, f'{get_datetime()}')
             logging.info(f'---------------------------------- epoch: {epoch_num}   time: {time.time()-t0:.2f}')
-            logging_info(f'---------------------------------- epoch: {epoch_num}   time: {time.time()-t0:.2f}')
+            logging_info(args, f'---------------------------------- epoch: {epoch_num}   time: {time.time()-t0:.2f}')
 
         # Synchronize all ranks before next epoch
         if use_ddp:
@@ -491,7 +497,7 @@ def main():
 
 
     if is_main_process():
-        logging_end()
+        logging_end(args)
 
         #### Test best model on test set
         best_model_path = join(args.save_dir, "best_model.pth")
@@ -508,12 +514,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # logging_init is called inside main() after DDP setup, guarded by is_main_process().
-    # We call it here only for the non-DDP case (before main sets up DDP).
-    use_ddp = ('RANK' in os.environ and 'WORLD_SIZE' in os.environ)
-    if not use_ddp:
-        logging_init()
     main()
-    # logging_end is called inside main() for rank 0.
-    if not use_ddp:
-        logging_end()

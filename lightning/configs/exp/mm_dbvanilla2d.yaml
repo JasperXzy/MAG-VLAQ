@@ -1,0 +1,11 @@
+trainer:
+  precision: 32-true
+
+model:
+  output_type: image_vox_shallow
+  final_type: imageorg_voxorg_shalloworg_stg2image_stg2vox
+  final_fusetype: add
+  final_l2: false
+  output_l2: true
+  image_embed: stg2image
+  cloud_embed: stg2vox

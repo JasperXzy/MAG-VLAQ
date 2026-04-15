@@ -15,10 +15,35 @@ from datasets.datasets_ws_kitti360 import kitti360_collate_fn_cache_q
 from datasets.datasets_ws_nuscenes import nuscenes_collate_fn_cache_db
 from datasets.datasets_ws_nuscenes import nuscenes_collate_fn_cache_q
 
-from tools.options import parse_arguments
-opt = parse_arguments()
+_TEST_PROGRESS_CALLBACK = None
 
 
+def set_progress_callback(callback):
+    global _TEST_PROGRESS_CALLBACK
+    _TEST_PROGRESS_CALLBACK = callback
+
+
+def _progress(iterable, args=None, desc=None, disable=False):
+    if _TEST_PROGRESS_CALLBACK is not None and not disable:
+        total = len(iterable) if hasattr(iterable, "__len__") else None
+        _TEST_PROGRESS_CALLBACK("start", desc, total)
+        try:
+            for item in iterable:
+                yield item
+                _TEST_PROGRESS_CALLBACK("advance", desc, 1)
+        finally:
+            _TEST_PROGRESS_CALLBACK("close", desc, None)
+        return
+
+    disable = disable or bool(getattr(args, "disable_dataset_tqdm", False))
+    yield from tqdm(
+        iterable,
+        desc=f"eval/{desc}" if desc else "eval",
+        disable=disable,
+        dynamic_ncols=True,
+        leave=False,
+        mininterval=1.0,
+    )
 
 
 def compute_recall(args, queries_features, database_features, test_ds, test_method='hard_resize'):
@@ -119,11 +144,11 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
         test_ds.test_method = "hard_resize"
         database_subset_ds = Subset(test_ds, list(range(test_ds.database_num)))
 
-        if opt.dataset == 'kitti360':
+        if args.dataset == 'kitti360':
             database_dataloader = DataLoader(dataset=database_subset_ds, num_workers=args.num_workers,
                                             batch_size=args.infer_batch_size, pin_memory=(args.device == "cuda"),
                                             collate_fn=kitti360_collate_fn_cache_db)
-        elif opt.dataset == 'nuscenes':
+        elif args.dataset == 'nuscenes':
             database_dataloader = DataLoader(dataset=database_subset_ds, num_workers=args.num_workers,
                                             batch_size=args.infer_batch_size, pin_memory=(args.device == "cuda"),
                                             collate_fn=nuscenes_collate_fn_cache_db)
@@ -133,7 +158,7 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
         else:
             all_features = np.empty((len(test_ds), args.features_dim), dtype="float32")
         db_locations = []
-        for data_dict, indices in tqdm(database_dataloader, ncols=50):
+        for data_dict, indices in _progress(database_dataloader, args=args, desc="db"):
             for _k, _v in data_dict.items():
                 if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
             features = model(data_dict, mode='db')
@@ -142,7 +167,7 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
             if pca is not None:
                 features = pca.transform(features)
             all_features[indices.numpy(), :] = features
-            if opt.dataset == 'nuscenes':
+            if args.dataset == 'nuscenes':
                 db_locations.extend(data_dict['db_location'])
         
         
@@ -152,17 +177,17 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
         queries_infer_batch_size = 1 if test_method == "single_query" else args.infer_batch_size
         test_ds.test_method = test_method
         queries_subset_ds = Subset(test_ds, list(range(test_ds.database_num, test_ds.database_num+test_ds.queries_num)))
-        if opt.dataset == 'kitti360':
+        if args.dataset == 'kitti360':
             queries_dataloader = DataLoader(dataset=queries_subset_ds, num_workers=args.num_workers,
                                             batch_size=queries_infer_batch_size, pin_memory=(args.device == "cuda"),
                                             collate_fn=kitti360_collate_fn_cache_q)
-        elif opt.dataset == 'nuscenes':
+        elif args.dataset == 'nuscenes':
             queries_dataloader = DataLoader(dataset=queries_subset_ds, num_workers=args.num_workers,
                                             batch_size=queries_infer_batch_size, pin_memory=(args.device == "cuda"),
                                             collate_fn=nuscenes_collate_fn_cache_q)
             
         q_locations = []
-        for data_dict, indices in tqdm(queries_dataloader, ncols=50):
+        for data_dict, indices in _progress(queries_dataloader, args=args, desc="q"):
             for _k, _v in data_dict.items():
                 if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
             # images = data_dict['image']
@@ -183,13 +208,13 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
                 all_features[indices, :] = features
             else:
                 all_features[indices.numpy(), :] = features
-            if opt.dataset == 'nuscenes':
+            if args.dataset == 'nuscenes':
                 q_locations.extend(data_dict['query_location'])
 
 
     queries_features = all_features[test_ds.database_num:]
     database_features = all_features[:test_ds.database_num]
-    if opt.dataset == 'nuscenes':
+    if args.dataset == 'nuscenes':
         assert len(q_locations) == len(queries_features)
         assert len(db_locations) == len(database_features)
 
@@ -247,10 +272,10 @@ if __name__ == '__main__':
         test_ds = NuScenesBaseDataset(args, args.datasets_folder, args.dataset_name, "test")
 
     args.features_dim = 256
-    model = DBVanilla2D(mode='db', dim=args.features_dim)
+    model = DBVanilla2D(mode='db', dim=args.features_dim, args=args)
 
 
-    modelq = MM(drop=None) # need change opt
+    modelq = MM(drop=None, args=args)
     print('Modeldb:', model.__class__.__name__)
     print(f'Modelq: {modelq.__class__.__name__}')
 

@@ -5,9 +5,6 @@ from network.image_fe import ImageFE
 from network.image_pooling import GeM
 import torch.nn.functional as F
 
-from tools.options import parse_arguments
-opt = parse_arguments()
-
 
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -24,12 +21,15 @@ class MLP(nn.Module):
 
 
 class DBVanilla2D(nn.Module):
-    def __init__(self, mode:List[str], dim):
+    def __init__(self, mode:List[str], dim, args=None):
         super().__init__()
+        if args is None:
+            raise ValueError("DBVanilla2D requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
         # ---- database
         if mode == 'db':
-            maptype = opt.maptype.split('_')
-            self.dbimage_fes = [ImageFE(fe_type='dinov2_vitl14') for _ in range(len(maptype))]
+            maptype = self.args.maptype.split('_')
+            self.dbimage_fes = [ImageFE(fe_type='dinov2_vitl14', args=self.args) for _ in range(len(maptype))]
             self.dbimage_pools = [GeM() for _ in range(len(maptype))]
             # self.dbimage_mlp = [nn.Linear(e.last_dim, dim) for e in self.dbimage_fes] # after pool, change dim
             self.dbimage_mlps = [MLP(e.last_dim, dim) for e in self.dbimage_fes] # after pool, change dim
@@ -56,7 +56,7 @@ class DBVanilla2D(nn.Module):
         out_dbvec = []
         for i in range(len(db_map)):
             dbmap_i = db_map[i].view(-1, c, h, w) # [b*ndb,3,h,w]
-            if opt.share_dbfe == True:
+            if self.args.share_dbfe == True:
                 dbmap_i, _ = self.dbimage_fes[0](dbmap_i)
                 dbvec_i = self.dbimage_pools[0](dbmap_i)
                 dbvec_i = self.dbimage_mlps[0](dbvec_i)
@@ -68,7 +68,7 @@ class DBVanilla2D(nn.Module):
             out_dbvec.append(dbvec_i)
         out_dbvec = torch.stack(out_dbvec, dim=1) # [b*ndb,nmap,c]
         # TODO: fusion
-        if opt.output_l2 == True:
+        if self.args.output_l2 == True:
             out_dbvec = F.normalize(out_dbvec, p=2, dim=-1) 
         out_dbvec = torch.mean(out_dbvec, dim=1) # [b*ndb,c]
         out_dbvec = out_dbvec.view(b, ndb, -1) # [b,ndb,c]
@@ -82,7 +82,7 @@ class DBVanilla2D(nn.Module):
         else:
             raise NotImplementedError
         
-        if opt.final_l2 == True:
+        if self.args.final_l2 == True:
             out_dbvec = F.normalize(out_dbvec, p=2, dim=-1)
             
         output_dict = {

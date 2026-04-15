@@ -32,9 +32,37 @@ from pc_augmentation import (
 )
 
 
-from tools.options import parse_arguments
-opt = parse_arguments()
 USE_MM_QUERY = True
+
+_DATASET_PROGRESS_CALLBACK = None
+
+
+def set_progress_callback(callback):
+    global _DATASET_PROGRESS_CALLBACK
+    _DATASET_PROGRESS_CALLBACK = callback
+
+
+def _progress(iterable, args=None, desc=None, disable=False):
+    if _DATASET_PROGRESS_CALLBACK is not None and not disable:
+        total = len(iterable) if hasattr(iterable, "__len__") else None
+        _DATASET_PROGRESS_CALLBACK("start", desc, total)
+        try:
+            for item in iterable:
+                yield item
+                _DATASET_PROGRESS_CALLBACK("advance", desc, 1)
+        finally:
+            _DATASET_PROGRESS_CALLBACK("close", desc, None)
+        return
+
+    disable = disable or bool(getattr(args, "disable_dataset_tqdm", False))
+    yield from tqdm(
+        iterable,
+        desc=desc,
+        disable=disable,
+        dynamic_ncols=True,
+        leave=False,
+        mininterval=1.0,
+    )
 
 
 base_transform = T.Compose([
@@ -181,10 +209,10 @@ def generate_bev_from_pc(pc, w=200, max_thd=2):
 
 
 
-def generate_sph_from_pc(pc, w=361, h=61):
+def generate_sph_from_pc(pc, w=361, h=61, args=None):
     # kitti   361  61
     # ithaca  361  101
-    if 'ithaca365' in opt.dataset_name:
+    if args is not None and 'ithaca365' in args.dataset_name:
         w = 361
         h = 101
     # generate spherical projection from pc
@@ -206,13 +234,13 @@ def generate_sph_from_pc(pc, w=361, h=61):
     uv = np.array(uv, dtype=np.int32)
     # plt.scatter(uv[:,1], uv[:,0], s=1, c=r, cmap='jet')
     # plt.show()
-    if 'ithaca365' in opt.dataset_name:
+    if args is not None and 'ithaca365' in args.dataset_name:
         ids_h = (uv[:,0] < h) &  (uv[:,0] >= 0)
         uv = uv[ids_h]
         r = r[ids_h]
     sph = np.zeros([h, w])
     sph[uv[:,0], uv[:,1]] = r
-    # if 'ithaca365' in opt.dataset_name:
+    # if 'ithaca365' in args.dataset_name:
     #     sph = sph[25:80]
     # plt.imshow(sph)
     # plt.imsave('sph.png', sph)
@@ -224,13 +252,13 @@ def generate_sph_from_pc(pc, w=361, h=61):
 
 
 
-def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
+def load_bev(file_path, dataset_name, bev_w, args): # filename is the same as load_pc
     """load pc + bev + sph
     """
     # # 1. load bev
     # filename = filename.split('/')
     # filename[-1] = filename[-1].replace('bin', 'png') 
-    # filename[-2] = filename[-2] + f'_w{opt.bev_w}_{opt.bev_cmap}'
+    # filename[-2] = filename[-2] + f'_w{args.bev_w}_{args.bev_cmap}'
     # filename = os.path.join(*filename)
     # file_path = os.path.join(self.data_root_dir, filename)
     # assert os.path.exists(file_path)
@@ -242,12 +270,12 @@ def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
         pc = np.fromfile(file_path, dtype=np.float32).reshape(-1,4)[:,:3] # kitti 
         assert pc.shape[1] == 3  
         bev = generate_bev_from_pc(pc, w=bev_w-1, max_thd=100)
-        sph = generate_sph_from_pc(pc)
+        sph = generate_sph_from_pc(pc, args=args)
     elif 'ithaca365' in dataset_name:
         pc = np.load(file_path)
         assert pc.shape[1] == 3
         bev = generate_bev_from_pc(pc, w=bev_w-1, max_thd=100)
-        sph = generate_sph_from_pc(pc)
+        sph = generate_sph_from_pc(pc, args=args)
     else:
         raise NotImplementedError
     
@@ -265,7 +293,7 @@ def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
             PCRandomFlip([0.25, 0.25, 0.]),
         ])
         pc = tfpc(pc)
-        pc = sparse_quantize(coordinates=pc, quantization_size=opt.quant_size)
+        pc = sparse_quantize(coordinates=pc, quantization_size=args.quant_size)
 
 
 
@@ -274,37 +302,37 @@ def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
     # bev.show()
 
     (_w,_h) = bev.size
-    assert opt.bev_resize <= 1
-    resize_ratio = random.uniform(opt.bev_resize, 2-opt.bev_resize)
+    assert args.bev_resize <= 1
+    resize_ratio = random.uniform(args.bev_resize, 2-args.bev_resize)
     resize_size = int(resize_ratio*min(_w,_h))
-    assert resize_size >= opt.bev_cropsize
+    assert resize_size >= args.bev_cropsize
 
-    if opt.bev_resize_mode == 'nearest':
+    if args.bev_resize_mode == 'nearest':
         resize_mode = InterpolationMode.NEAREST
-    elif opt.bev_resize_mode == 'bilinear':
+    elif args.bev_resize_mode == 'bilinear':
         resize_mode = InterpolationMode.BILINEAR
     else:
         raise NotImplementedError
     
-    if opt.bev_rotate_mode == 'nearest':
+    if args.bev_rotate_mode == 'nearest':
         rotate_mode = InterpolationMode.NEAREST
-    elif opt.bev_rotate_mode == 'bilinear':
+    elif args.bev_rotate_mode == 'bilinear':
         rotate_mode = InterpolationMode.BILINEAR
     else:
         raise NotImplementedError
     
     tf = TVT.Compose([
         TVT.Resize(resize_size, interpolation=resize_mode),
-        TVT.RandomRotation(opt.bev_rotate, interpolation=rotate_mode),
-        TVT.CenterCrop(opt.bev_cropsize),
-        TVT.ColorJitter(brightness=opt.bev_jitter, contrast=opt.bev_jitter, saturation=opt.bev_jitter, hue=min(0.5, opt.bev_jitter)),
+        TVT.RandomRotation(args.bev_rotate, interpolation=rotate_mode),
+        TVT.CenterCrop(args.bev_cropsize),
+        TVT.ColorJitter(brightness=args.bev_jitter, contrast=args.bev_jitter, saturation=args.bev_jitter, hue=min(0.5, args.bev_jitter)),
         TVT.ToTensor(),
-        TVT.Normalize(mean=opt.bev_mean, std=opt.bev_std)
+        TVT.Normalize(mean=args.bev_mean, std=args.bev_std)
     ])
     bev = tf(bev)
 
     # # ---- DEBUG:viz
-    # bev = bev*opt.bev_std + opt.bev_mean
+    # bev = bev*args.bev_std + args.bev_mean
     # bev = TVT.ToPILImage()(bev)
     # bev.show()
 
@@ -313,14 +341,14 @@ def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
     # ==== sph
     sph = Image.fromarray(sph).convert('RGB')
     (_w,_h) = sph.size
-    assert opt.sph_resize <= 1
-    resize_ratio = random.uniform(opt.sph_resize, 2-opt.sph_resize)
+    assert args.sph_resize <= 1
+    resize_ratio = random.uniform(args.sph_resize, 2-args.sph_resize)
     resize_size = int(resize_ratio*min(_w,_h))
     tf = TVT.Compose([
         TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST),
-        TVT.ColorJitter(brightness=opt.sph_jitter, contrast=opt.sph_jitter, saturation=opt.sph_jitter, hue=min(0.5, opt.sph_jitter)),
+        TVT.ColorJitter(brightness=args.sph_jitter, contrast=args.sph_jitter, saturation=args.sph_jitter, hue=min(0.5, args.sph_jitter)),
         TVT.ToTensor(),
-        TVT.Normalize(mean=opt.sph_mean, std=opt.sph_std)
+        TVT.Normalize(mean=args.sph_mean, std=args.sph_std)
     ])
     sph = tf(sph)
 
@@ -404,7 +432,7 @@ class BaseDataset(data.Dataset):
         
         # Find soft_positives_per_query, which are within val_positive_dist_threshold (deafult 25 meters)
         # knn = NearestNeighbors(n_jobs=-1)
-        knn = NearestNeighbors(n_jobs=opt.num_workers+1)
+        knn = NearestNeighbors(n_jobs=self.args.num_workers + 1)
         knn.fit(self.database_utms)
         self.soft_positives_per_query = knn.radius_neighbors(self.queries_utms,
                                                              radius=args.val_positive_dist_threshold,
@@ -426,7 +454,12 @@ class BaseDataset(data.Dataset):
         else:
             img = self._test_query_transform(img)
         if index >= self.database_num: # query
-            bev, pc, sph = load_bev(self.pcs_paths[index], dataset_name=self.dataset_name, bev_w=opt.bev_w)
+            bev, pc, sph = load_bev(
+                self.pcs_paths[index],
+                dataset_name=self.dataset_name,
+                bev_w=self.args.bev_w,
+                args=self.args,
+            )
         else: # database
             bev = torch.empty(0)
             sph = torch.empty(0)
@@ -517,7 +550,7 @@ class TripletsDataset(BaseDataset):
                 # T.RandomResizedCrop(size=self.resize, scale=(1-args.random_resized_crop, 1), antialias=True),
                 # T.RandomRotation(degrees=args.random_rotation),
                 self.resized_transform,
-                # T.Resize(opt.resize, antialias=True)
+                # T.Resize(args.resize, antialias=True)
         ])
         
         # Find hard_positives_per_query, which are within train_positives_dist_threshold (10 meters)
@@ -578,7 +611,12 @@ class TripletsDataset(BaseDataset):
         
 
         assert query_index < self.queries_num        
-        query_bev, query_pc, query_sph = load_bev(self.queries_pc_paths[query_index], dataset_name=self.dataset_name, bev_w=opt.bev_w) # load + transform
+        query_bev, query_pc, query_sph = load_bev(
+            self.queries_pc_paths[query_index],
+            dataset_name=self.dataset_name,
+            bev_w=self.args.bev_w,
+            args=self.args,
+        ) # load + transform
 
         output_dict = {
             'image':images,
@@ -625,7 +663,7 @@ class TripletsDataset(BaseDataset):
         # RAMEfficient2DMatrix is RAM efficient for full database mining.
         cache = RAMEfficient2DMatrix(cache_shape, dtype=np.float32) # [db+q, c]
         with torch.no_grad():
-            for images, indexes in tqdm(subset_dl):
+            for images, indexes in _progress(subset_dl, args=args, desc="cache"):
                 images = images.to(args.device)
                 features = model(images)
                 cache[indexes.numpy()] = features.cpu().numpy()
@@ -644,8 +682,17 @@ class TripletsDataset(BaseDataset):
         model = model.eval()
         modelq = modelq.eval()
 
-        subset_ds_db = Subset(subset_ds.dataset, list(range(subset_ds.dataset.database_num)))
-        subset_ds_q = Subset(subset_ds.dataset, list(range(subset_ds.dataset.database_num, len(subset_ds.dataset))))
+        if isinstance(subset_ds, Subset):
+            parent_ds = subset_ds.dataset
+            subset_indices = [int(i) for i in subset_ds.indices]
+        else:
+            parent_ds = subset_ds
+            subset_indices = list(range(len(parent_ds)))
+        db_indices = [i for i in subset_indices if i < parent_ds.database_num]
+        q_indices = [i for i in subset_indices if i >= parent_ds.database_num]
+
+        subset_ds_db = Subset(parent_ds, db_indices)
+        subset_ds_q = Subset(parent_ds, q_indices)
         subset_dl_db = DataLoader(dataset=subset_ds_db, num_workers=args.num_workers,
                                  batch_size=args.infer_batch_size, shuffle=False,
                                  pin_memory=(args.device == "cuda"),
@@ -660,13 +707,13 @@ class TripletsDataset(BaseDataset):
         # RAMEfficient2DMatrix is RAM efficient for full database mining.
         cache = RAMEfficient2DMatrix(cache_shape, dtype=np.float32) # [db+q, c]
         with torch.no_grad():
-            for data_dict, indexes in tqdm(subset_dl_db):
+            for data_dict, indexes in _progress(subset_dl_db, args=args, desc="cache/db"):
                 data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
                 # images = data_dict['image']
                 # images = images.to(args.device)
                 features = model(data_dict, mode='db')
                 cache[indexes.numpy()] = features.cpu().numpy()
-            for data_dict, indexes in tqdm(subset_dl_q):
+            for data_dict, indexes in _progress(subset_dl_q, args=args, desc="cache/q"):
                 data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
                 # images = data_dict['image']
                 # images = images.to(args.device)
@@ -718,7 +765,7 @@ class TripletsDataset(BaseDataset):
         cache = self.compute_cache(args, model, subset_ds, (len(self), args.features_dim))
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache)
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             
@@ -742,7 +789,7 @@ class TripletsDataset(BaseDataset):
         cache = self.compute_cache(args, model, subset_ds, (len(self), args.features_dim))
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache)
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             # Choose 1000 random database images (neg_indexes)
@@ -790,7 +837,7 @@ class TripletsDataset(BaseDataset):
         cache = self.compute_cache(args, model, subset_ds, cache_shape=(cache_length, args.features_dim)) 
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache) # query_features = cache[query_index + self.database_num]
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             
@@ -834,7 +881,7 @@ class TripletsDataset(BaseDataset):
         cache = self.compute_cache_sep(args, model, subset_ds, cache_shape=(cache_length, args.features_dim), modelq=modelq) 
         
         # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in tqdm(sampled_queries_indexes):
+        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
             query_features = self.get_query_features(query_index, cache) # query_features = cache[query_index + self.database_num]
             best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
             

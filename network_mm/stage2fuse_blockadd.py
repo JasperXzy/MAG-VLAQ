@@ -13,16 +13,6 @@ from layers.sparse_utils import SimpleSparse, sparse_broadcast_add, sparse_broad
 from layers.eca_block import ECABasicBlock
 from layers.pooling import MinkGeM
 
-from tools.options import parse_arguments
-opt = parse_arguments()
-
-
-
-
-
-
-
-
 class SparseLinear(nn.Module):
     """Wraps nn.Linear to operate on SimpleSparse (pointwise linear transform)."""
     def __init__(self, in_features, out_features):
@@ -130,8 +120,11 @@ class FFNFuse(nn.Module):
 
 
 class Stage2FuseBlockAdd(nn.Module):
-    def __init__(self, fusedim, imgdim, bevdim, voxdim):
+    def __init__(self, fusedim, imgdim, bevdim, voxdim, args=None):
         super().__init__()
+        if args is None:
+            raise ValueError("Stage2FuseBlockAdd requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
         
         self.projsfusebev = nn.ModuleList()
         self.projsfuseimg = nn.ModuleList()
@@ -143,8 +136,8 @@ class Stage2FuseBlockAdd(nn.Module):
         self.projsimgfuse = nn.ModuleList()
         self.projsvoxfuse = nn.ModuleList()
         self.ffnsfuse = nn.ModuleList()
-        for i in range(opt.stg2nlayers):
-            if opt.stg2_useproj == True:
+        for i in range(self.args.stg2nlayers):
+            if self.args.stg2_useproj == True:
                 self.projsfuseimg.append(nn.Sequential(
                     nn.Linear(fusedim, imgdim)))
                 self.projsfusevox.append(nn.Sequential(
@@ -161,7 +154,7 @@ class Stage2FuseBlockAdd(nn.Module):
                 self.projsvoxfuse.append(nn.Identity())
             self.ffnsimg.append(BasicBlock(imgdim))
             self.ffnsvox.append(ECABasicBlock(voxdim, voxdim))
-            self.ffnsfuse.append(FFNFuse(dim=fusedim, stg2fuse_type=opt.stg2fuse_type))
+            self.ffnsfuse.append(FFNFuse(dim=fusedim, stg2fuse_type=self.args.stg2fuse_type))
 
 
         # self.poolbev = GeM()
@@ -173,7 +166,7 @@ class Stage2FuseBlockAdd(nn.Module):
         # imagefeatmap: [b, c, h, w]
         # bevfeatmap: [b, c, h, w]
         # fusevec: [b, c]
-        for i in range(opt.stg2nlayers):
+        for i in range(self.args.stg2nlayers):
             projfuseimg = self.projsfuseimg[i]
             projfusevox = self.projsfusevox[i]
             ffnimg = self.ffnsimg[i]
@@ -182,7 +175,7 @@ class Stage2FuseBlockAdd(nn.Module):
             projvoxfuse = self.projsvoxfuse[i]
             ffnfuse = self.ffnsfuse[i]
 
-            if opt.stg2_type == 'full':
+            if self.args.stg2_type == 'full':
                 fusevec_img = projfuseimg(fusevec)
                 fusevec_vox = projfusevox(fusevec)
                 imgmap = imgmap + fusevec_img.unsqueeze(-1).unsqueeze(-1)
@@ -194,7 +187,7 @@ class Stage2FuseBlockAdd(nn.Module):
                 imgoutvec = self.poolimage(imgmap).flatten(1) 
                 voxoutvec = self.poolvox(voxmap).flatten(1)
 
-                if opt.stg2fuse_type == None:
+                if self.args.stg2fuse_type == None:
                     None
                 else:
                     imgmap_fuse = projimgfuse(imgmap)
@@ -219,7 +212,7 @@ class Stage2FuseBlockAdd(nn.Module):
         # fusevec: [b, c]
         # assert imagemap.shape[1] == bevmap.shape[1]
         # assert imagemap.shape[1] == fusevec.shape[1]
-        for i in range(opt.stg2nlayers):
+        for i in range(self.args.stg2nlayers):
             projfuseimage = self.projsfuseimg[i]
             projfusebev = self.projsfusebev[i]
             # projfusevox = self.projsfusevox[i]
@@ -231,7 +224,7 @@ class Stage2FuseBlockAdd(nn.Module):
             # projvoxfuse = self.projsvoxfuse[i]
             ffnfuse = self.ffnsfuse[i]
 
-            if opt.stg2_type == 'full':
+            if self.args.stg2_type == 'full':
                 fusevec_image = projfuseimage(fusevec)
                 fusevec_bev = projfusebev(fusevec)
                 # fusevec_vox = projfusevox(fusevec)
@@ -246,7 +239,7 @@ class Stage2FuseBlockAdd(nn.Module):
                 bevoutvec = self.poolbev(bevmap).flatten(1)
                 # voxoutvec = self.poolvox(voxmap).flatten(1)
 
-                if opt.stg2fuse_type == 'res':
+                if self.args.stg2fuse_type == 'res':
                     None
                 else:
                     imgmap_fuse = projimgfuse(imagemap)
@@ -259,7 +252,7 @@ class Stage2FuseBlockAdd(nn.Module):
                     # fusevec = fusevec + imagevec_fuse + voxvec_fuse.F
                     fusevec = ffnfuse(fusevec)
 
-            elif opt.stg2_type == 'image_bev':
+            elif self.args.stg2_type == 'image_bev':
                 imagemap = ffnimage(imagemap)
                 bevmap = ffnbev(bevmap)
                 imageoutvec = self.poolimage(imagemap).flatten(1) 

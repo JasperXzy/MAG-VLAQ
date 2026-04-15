@@ -7,9 +7,6 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 
-from tools.options import parse_arguments
-opt = parse_arguments()
-
 
 class ODEFunc(nn.Module):
     def __init__(self, func):
@@ -76,14 +73,15 @@ class FC(nn.Module):
         return x
 
 class FCODE(nn.Module):
-    def __init__(self, dim, act=None):
+    def __init__(self, dim, act=None, args=None):
         super().__init__()
+        if args is None:
+            raise ValueError("FCODE requires explicit args; parse CLI/config in the entrypoint.")
+        self.args = args
         self.func = ODEFunc(FC(dim,dim,act))
     def forward(self, x):
         t = torch.tensor([0, 1]).float().type_as(x)
-        out = odeint(self.func, x, t, method=opt.odeint_method, options={'step_size': opt.odeint_size},
-                     rtol=opt.tol, atol=opt.tol)
+        out = odeint(self.func, x, t, method=self.args.odeint_method, options={'step_size': self.args.odeint_size},
+                     rtol=self.args.tol, atol=self.args.tol)
         out = out[-1]
         return out
-
-
