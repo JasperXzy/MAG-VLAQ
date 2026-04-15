@@ -16,7 +16,6 @@ from torch.utils.data.dataloader import DataLoader
 import random
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as TVT
-from viz_lidar import viz_lidar_open3d
 from layers.sparse_utils import batched_coordinates, sparse_quantize
 import copy
 import matplotlib.pyplot as plt
@@ -574,21 +573,7 @@ def load_sensordata_from_sampletoken(nusc, sample_token):
             pc = sparse_quantize(coordinates=pc, quantization_size=opt.quant_size)
             sensordatas['LIDAR_TOP'] = pc
             
-            # load sph
-            if 'lcpr' in opt.modelq:
-                sphdatapath = datapath.replace('.pcd.bin', '.npy')
-                sphdatapath = sphdatapath.replace('samples/LIDAR_TOP', 'samples/RANGE_DATA')
-                sph = np.load(sphdatapath)
-                assert len(sph.shape) == 2
-                tf = TVT.Compose([TVT.ToTensor(),
-                                TVT.Resize(32, antialias=True), # [1,32,1056]
-                                ])
-                sph = tf(sph)
-                if sph.shape[0] == 1:
-                    sph = sph.repeat(3,1,1)
-                sensordatas['RANGE_DATA'] = sph
-            else:
-                sensordatas['RANGE_DATA'] = torch.empty(0)
+            sensordatas['RANGE_DATA'] = torch.empty(0)
 
             # load bev
             # w = 200

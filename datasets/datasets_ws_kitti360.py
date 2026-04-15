@@ -16,7 +16,6 @@ from torch.utils.data.dataloader import DataLoader
 import random
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as TVT
-from viz_lidar import viz_lidar_open3d
 import copy
 import matplotlib.pyplot as plt
 import utm
@@ -565,92 +564,9 @@ def generate_sph_from_pc(pc, w=361, h=61):
 
 def load_pc_sph_bev(file_path, split): # filename is the same as load_pc
     pc = np.fromfile(file_path, dtype=np.float32).reshape(-1,3) # for kitti360_voxel
-    # ==== sph
-    if 'lcpr' in opt.modelq or 'liploc' in opt.modelq:
-        sph = generate_sph_from_pc(pc, w=361, h=61)
-        sph = Image.fromarray(sph).convert('RGB')
-        # (_w,_h) = sph.size
-        # assert opt.sph_resize <= 1
-        # resize_ratio = random.uniform(opt.sph_resize, 2-opt.sph_resize)
-        # resize_size = int(resize_ratio*min(_w,_h))
-        if split == 'train':
-            tf = TVT.Compose([
-                TVT.Resize(opt.sph_size, interpolation=InterpolationMode.NEAREST),
-                TVT.ColorJitter(brightness=opt.sph_jit, contrast=opt.sph_jit, saturation=opt.sph_jit, hue=min(0.5, opt.sph_jit)),
-                TVT.ToTensor(),
-                # TVT.Normalize(mean=opt.sph_mean, std=opt.sph_std)
-            ])
-        elif split == 'test':
-            tf = TVT.Compose([
-                TVT.Resize(opt.sph_size, interpolation=InterpolationMode.NEAREST),
-                # TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST),
-                TVT.ToTensor(),
-                # TVT.Normalize(mean=opt.sph_mean, std=opt.sph_std)
-            ])
-        else:
-            raise NotImplementedError
-        sph = tf(sph)
-    else:
-        sph = torch.empty(0)
-    # ==== bev
-    if 'bevplace' in opt.modelq:
-        bev = generate_bev_from_pc(pc, w=200, max_thd=100)
-        bev = Image.fromarray(bev).convert('RGB')
-        if split == 'train':
-            tf = TVT.Compose([
-                # TVT.CenterCrop(opt.db_cropsize),
-                # TVT.Resize(opt.db_resize), 
-                TVT.ColorJitter(brightness=opt.bev_jit, contrast=opt.bev_jit, saturation=opt.bev_jit, hue=min(0.5, opt.bev_jit)),
-                TVT.ToTensor(),
-            ])
-        elif split == 'test':
-            tf = TVT.Compose([
-                # TVT.CenterCrop(opt.db_cropsize),
-                # TVT.Resize(opt.db_resize), 
-                TVT.ToTensor(),
-            ])
-        else:
-            raise NotImplementedError
-            
-        bev = tf(bev)
-    else:
-        bev = torch.empty(0)
-
+    sph = torch.empty(0)
+    bev = torch.empty(0)
     return pc, sph, bev
-
-
-
-
-def load_pc_sph(file_path, split): # filename is the same as load_pc
-    pc = np.fromfile(file_path, dtype=np.float32).reshape(-1,3) # for kitti360_voxel
-    sph = generate_sph_from_pc(pc, w=361, h=61)
-    # ==== sph
-    sph = Image.fromarray(sph).convert('RGB')
-    # (_w,_h) = sph.size
-    # assert opt.sph_resize <= 1
-    # resize_ratio = random.uniform(opt.sph_resize, 2-opt.sph_resize)
-    # resize_size = int(resize_ratio*min(_w,_h))
-    if split == 'train':
-        tf = TVT.Compose([
-            # TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST),
-            TVT.ColorJitter(brightness=opt.sph_jit, contrast=opt.sph_jit, saturation=opt.sph_jit, hue=min(0.5, opt.sph_jit)),
-            TVT.ToTensor(),
-            # TVT.Normalize(mean=opt.sph_mean, std=opt.sph_std)
-        ])
-    elif split == 'test':
-        tf = TVT.Compose([
-            # TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST),
-            TVT.ToTensor(),
-            # TVT.Normalize(mean=opt.sph_mean, std=opt.sph_std)
-        ])
-    else:
-        raise NotImplementedError
-    sph = tf(sph)
-    return pc, sph
-
-
-
-
 
 
 

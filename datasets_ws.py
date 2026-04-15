@@ -16,7 +16,6 @@ from torch.utils.data.dataloader import DataLoader
 import random
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as TVT
-from viz_lidar import viz_lidar_open3d
 from layers.sparse_utils import batched_coordinates, sparse_quantize
 import copy
 import matplotlib.pyplot as plt
@@ -35,6 +34,7 @@ from pc_augmentation import (
 
 from tools.options import parse_arguments
 opt = parse_arguments()
+USE_MM_QUERY = True
 
 
 base_transform = T.Compose([
@@ -75,7 +75,7 @@ def collate_fn(batch):
     sphs = torch.stack([e[0]['sph'] for e in batch]) # [3,h,w] -> [b,3,h,w]
     pcs = [e[0]['pc'] for e in batch]
     # ---- batch augmentation
-    if opt.modelq in ['mm','minklocppbev','adafusionbev']:
+    if USE_MM_QUERY:
         coords = torch.ones(1)
     else:
         coords = batched_coordinates(pcs)
@@ -131,7 +131,7 @@ def collate_fn_cache_q(batch):
     sphs = torch.stack([e[0]['sph'] for e in batch]) # [3,h,w] -> [b,3,h,w]
     pcs = [e[0]['pc'] for e in batch]
     # ---- batch augmentation
-    if opt.modelq in ['mm','minklocppbev','adafusionbev']:
+    if USE_MM_QUERY:
         coords = torch.ones(1)
     else:
         coords = batched_coordinates(pcs)
@@ -240,7 +240,6 @@ def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
     # file_path = os.path.join(self.data_root_dir, filename)
     if 'kitti_raw' in dataset_name:
         pc = np.fromfile(file_path, dtype=np.float32).reshape(-1,4)[:,:3] # kitti 
-        # viz_lidar_open3d(pc)
         assert pc.shape[1] == 3  
         bev = generate_bev_from_pc(pc, w=bev_w-1, max_thd=100)
         sph = generate_sph_from_pc(pc)
@@ -253,7 +252,7 @@ def load_bev(file_path, dataset_name, bev_w): # filename is the same as load_pc
         raise NotImplementedError
     
     # ==== pc
-    if opt.modelq in ['mm','minklocppbev','adafusionbev']:
+    if USE_MM_QUERY:
         pc = torch.tensor(pc).float()
     else:
         pc = torch.tensor(pc).float()

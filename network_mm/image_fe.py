@@ -1,214 +1,59 @@
 import torch
 import torch.nn as nn
-import torchvision
 
 
 class ImageFE(nn.Module):
-    def __init__(self, fe_type, layers):
+    def __init__(self, fe_type, layers=None):
         super().__init__()
-
         self.fe_type = fe_type
-        layers = [int(x) for x in layers.split('_')]
-        self.layers = layers
+        if self.fe_type != 'dinov2_vitl14':
+            raise NotImplementedError(
+                f"Query ImageFE now only supports 'dinov2_vitl14'; got {self.fe_type}"
+            )
 
-        if self.fe_type == 'resnet18':
-            self.fe = torchvision.models.resnet18(pretrained=True)
-            if len(self.layers) == 2:
-                self.last_dim = 128
-                self.fe.layer3 = nn.Identity()
-                self.fe.layer4 = nn.Identity()
-            elif len(self.layers) == 3:
-                self.last_dim = 256
-                self.fe.layer4 = nn.Identity()
-            elif len(self.layers) == 4:
-                self.last_dim = 512
-            else:
-                raise NotImplementedError
-        
-        elif self.fe_type == 'resnet34':
-            self.fe = torchvision.models.resnet34(pretrained=True)
-            if len(self.layers) == 2:
-                self.last_dim = 128
-                self.fe.layer3 = nn.Identity()
-                self.fe.layer4 = nn.Identity()
-            elif len(self.layers) == 3:
-                self.last_dim = 256
-                self.fe.layer4 = nn.Identity()
-            elif len(self.layers) == 4:
-                self.last_dim = 512
-            else:
-                raise NotImplementedError
-            
-        elif self.fe_type == 'squeezenet10':
-            self.fe = torchvision.models.squeezenet1_0(pretrained=True)
-            self.squeezenet_fc = nn.Conv2d(512, 256, kernel_size=1)
-            self.last_dim = 256
-        elif self.fe_type == 'squeezenet11':
-            self.fe = torchvision.models.squeezenet1_1(pretrained=True)
-            self.squeezenet_fc = nn.Conv2d(512, 256, kernel_size=1)
-            self.last_dim = 256
-        
-        elif self.fe_type == 'convnext_tiny':
-            self.fe = torchvision.models.convnext_tiny(pretrained=True)
-            if len(self.layers) == 2:
-                self.last_dim = 192
-            elif len(self.layers) == 3:
-                self.last_dim = 384
-            elif len(self.layers) == 4:
-                self.last_dim = 768
-            else:
-                raise NotImplementedError
-            # ==== remove last two blocks
-            layers_list = list(self.fe.features.children())
-            assert len(layers_list)==8
-            if len(self.layers) == 3:
-                layers_list = layers_list[:-2]
-            elif len(self.layers) == 4:
-                layers_list = layers_list
-            else:
-                raise NotImplementedError
-            # ==== remove layers in each block
-            for i in range(len(layers_list)):
-                if i == 1: 
-                    layers_list[i] = layers_list[i][:self.layers[0]]
-                if i == 3: 
-                    layers_list[i] = layers_list[i][:self.layers[1]]
-                if i == 5: 
-                    layers_list[i] = layers_list[i][:self.layers[2]]
-                if i == 7:
-                    layers_list[i] = layers_list[i][:self.layers[3]]
-            self.fe.features = nn.Sequential(*layers_list)
-
-        elif self.fe_type == 'dinov2_vitl14':
-            from tools.options import parse_arguments
-            opt = parse_arguments()
-            self.fe = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14')
-            self.last_dim = 1024 # 1024 (Patch only)
-
-            dino_mode = getattr(opt, 'unfreeze_dino_mode', 'frozen')
-            if opt.lrdino == 0.0:
-                dino_mode = 'frozen'
-
-            # Freeze all parameters
-            for param in self.fe.parameters():
-                param.requires_grad = False
-
-            # Selectively unfreeze based on mode
-            if dino_mode == 'full':
-                for param in self.fe.parameters():
-                    param.requires_grad = True
-            elif dino_mode == 'last2':
-                # Unfreeze the last two transformer blocks
-                if hasattr(self.fe, 'blocks'):
-                    for block in self.fe.blocks[-2:]:
-                        for param in block.parameters():
-                            param.requires_grad = True
-                # Unfreeze the final layer norm
-                if hasattr(self.fe, 'norm') and self.fe.norm is not None:
-                    for param in self.fe.norm.parameters():
-                        param.requires_grad = True
-
-        else:
-            raise NotImplementedError
-        
-
-    def forward_resnet(self, x):
-        x = self.fe.conv1(x)
-        x = self.fe.bn1(x)
-        x = self.fe.relu(x)
-        x = self.fe.maxpool(x)
-
-        l1out = self.fe.layer1(x)
-        l2out = self.fe.layer2(l1out)
-        l3out = self.fe.layer3(l2out)
-        if len(self.layers) == 4:
-            l4out = self.fe.layer4(l3out)
-            out = [l1out, l2out, l3out, l4out]
-        elif len(self.layers) == 3:
-            out = [l1out, l2out, l3out]
-        else:
-            raise NotImplementedError
-        return out
-    
-
-    def forward_convnext(self, x):
-        # 96 96 192 384 768
-        # 0: stem      3-96, stride 4
-        # 1: stage1   96-96
-        # 2: conv    96-192, stride 2
-        # 3: stage2 192-192
-        # 4: conv   192-384, stride 2
-        # 5: stage3 384-384
-        # 6: conv   384-768, stride 2
-        # 7: stage4 768-768
-        layers_list = list(self.fe.features.children())
-        # assert len(layers_list)==8
-        # if len(self.layers) == 3:
-        #     layers_list = layers_list[:-2]
-        # elif len(self.layers) == 4:
-        #     layers_list = layers_list
-        # else:
-        #     raise NotImplementedError
-        out = []
-        for i in range(len(layers_list)):
-            layer = layers_list[i]
-            if i == 1: 
-                layer = layer[:self.layers[0]]
-            if i == 3: 
-                layer = layer[:self.layers[1]]
-            if i == 5: 
-                layer = layer[:self.layers[2]]
-            if i == 7:
-                layer = layer[:self.layers[3]]
-            x = layer(x)
-            if i in [1,3,5]: 
-                out.append(x)
-        return out
-
-
-    def forward_dino(self, x):
         from tools.options import parse_arguments
         opt = parse_arguments()
-        target_blocks = [int(e) for e in opt.dino_extract_blocks.split('_')]
 
+        self.fe = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14')
+        self.last_dim = 1024
+        self.target_blocks = [int(e) for e in opt.dino_extract_blocks.split('_')]
+
+        dino_mode = getattr(opt, 'unfreeze_dino_mode', 'frozen')
+        if opt.lrdino == 0.0:
+            dino_mode = 'frozen'
+
+        for param in self.fe.parameters():
+            param.requires_grad = False
+
+        if dino_mode == 'full':
+            for param in self.fe.parameters():
+                param.requires_grad = True
+        elif dino_mode == 'last2':
+            if hasattr(self.fe, 'blocks'):
+                for block in self.fe.blocks[-2:]:
+                    for param in block.parameters():
+                        param.requires_grad = True
+            if hasattr(self.fe, 'norm') and self.fe.norm is not None:
+                for param in self.fe.norm.parameters():
+                    param.requires_grad = True
+
+    def forward_dino(self, x):
         h, w = x.shape[-2] // 14, x.shape[-1] // 14
-
-        # Manually forward through blocks, collecting outputs at target layers
         x_tokens = self.fe.prepare_tokens_with_masks(x)
         last_block_idx = len(self.fe.blocks) - 1
         outputs = []
         for i, blk in enumerate(self.fe.blocks):
             x_tokens = blk(x_tokens)
-            if i in target_blocks:
+            if i in self.target_blocks:
                 tokens = self.fe.norm(x_tokens) if i == last_block_idx else x_tokens
-                patch_tokens = tokens[:, 1:]  # remove CLS token, [B, N, 1024]
+                patch_tokens = tokens[:, 1:]
                 b, n, c = patch_tokens.shape
                 assert h * w == n, f"Patch count mismatch: {h}*{w} != {n}"
                 feat_map = patch_tokens.transpose(1, 2).reshape(b, c, h, w)
                 outputs.append(feat_map)
-
         return outputs
 
-
     def forward(self, x):
-        if self.fe_type in ['resnet18', 'resnet34']:
-            x_list = self.forward_resnet(x)
-        if self.fe_type in ['resnet18unet']:
-            x_list = self.forward_resnetunet(x)
-        if self.fe_type in ['darknet']:
-            x_list = self.forward_darknet(x)
-        if self.fe_type in ['squeezesegv2']:
-            x_list = self.forward_squeezesegv2(x)
-        if self.fe_type in ['squeezenet10', 'squeezenet11']:
-            x_list = self.forward_squeezenet(x)
-        if self.fe_type in ['convnext_tiny']:
-            x_list = self.forward_convnext(x)
-        if 'clip' in self.fe_type:
-            x_list = self.forward_clip(x)
-        if 'dinov2' in self.fe_type:
-            x_list = self.forward_dino(x)
-
-        # feature map
+        x_list = self.forward_dino(x)
         feat_map = x_list[-1]
-
         return feat_map, x_list

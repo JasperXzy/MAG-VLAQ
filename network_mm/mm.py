@@ -1,18 +1,6 @@
-
-
-
-
-
-
-
-
-
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from typing import List
 
 from network_mm.image_fe import ImageFE
 from network_mm.image_pooling import GeM
@@ -42,27 +30,14 @@ class MM(nn.Module):
         super().__init__()
         self.drop = drop
         # ---- query
-        self.image_fe = ImageFE(fe_type=opt.mm_imgfe, layers=opt.mm_imgfe_layers)
+        self.image_fe = ImageFE(fe_type='dinov2_vitl14')
         self.image_pool = GeM()
         planes = [int(x) for x in opt.mm_voxfe_planes.split('_')]
-        layers = [int(x) for x in opt.mm_voxfe_layers.split('_')]
-        self.voxfe_arch = getattr(opt, 'mm_voxfe_arch', 'minkfpn')
-        if self.voxfe_arch == 'utonia':
-            self.vox_fe = UtoniaFE(out_channels=planes[-1], planes=planes)
-        else:
-            # Legacy MinkFPN path — requires MinkowskiEngine
-            from models.minkfpn import MinkFPN
-            from models_minkloc.eca_block import ECABasicBlock as _ECABlock
-            self.vox_fe = MinkFPN(in_channels=1, out_channels=planes[-1],
-                                  planes=planes, layers=layers,
-                                  num_top_down=opt.mm_voxfe_ntd, conv0_kernel_size=5, block=_ECABlock)
+        self.vox_fe = UtoniaFE(out_channels=planes[-1], planes=planes)
         self.vox_pool = MinkGeM()
 
-        img_dims = [int(e) for e in opt.mm_imgfe_planes.split('_')]
-        if 'dinov2' in opt.mm_imgfe:
-            # If using DINOv2, we only have one feature map level.
-            # We wrap it in a list of length matching planes/dims to satisfy FuseBlockToShallow
-            img_dims = [opt.mm_imgfe_dim for _ in range(len(planes))]
+        # DINOv2 returns one feature map; repeat it to match Utonia's multi-stage fusion inputs.
+        img_dims = [opt.mm_imgfe_dim for _ in range(len(planes))]
 
         # Ensure img_dims are correctly passed to FuseBlockToShallow
         self.fuseblocktoshallow = FuseBlockToShallow(dims=[opt.mm_stg2fuse_dim for _ in range(len(planes))],
@@ -86,10 +61,7 @@ class MM(nn.Module):
         self.stg2vox_weight = nn.Parameter(torch.tensor(opt.stg2imagevox_weight, dtype=torch.float32), requires_grad=opt.stg2imagevox_learnweight)
         self.stg2fuse_weight = nn.Parameter(torch.tensor(opt.stg2fuse_weight, dtype=torch.float32), requires_grad=opt.stg2fuse_learnweight)
 
-        if 'dinov2' in opt.mm_imgfe:
-            self.image_proj = MLP(opt.mm_imgfe_dim, opt.features_dim)
-        else:
-            self.image_proj = nn.Identity()
+        self.image_proj = MLP(opt.mm_imgfe_dim, opt.features_dim)
 
         self.vox_proj = MLP(planes[-1], opt.features_dim)
         self.stg2image_proj = MLP(opt.mm_imgfe_dim, opt.features_dim)
@@ -107,9 +79,8 @@ class MM(nn.Module):
         output = []
         if 'image' in opt.output_type:
             imagefeatmap, imagefeatmaplist = self.image_fe(image)
-            if 'dinov2' in opt.mm_imgfe:
-                planes = [int(x) for x in opt.mm_voxfe_planes.split('_')]
-                imagefeatmaplist = [imagefeatmap for _ in range(len(planes))]
+            planes = [int(x) for x in opt.mm_voxfe_planes.split('_')]
+            imagefeatmaplist = [imagefeatmap for _ in range(len(planes))]
 
             imagefeatvec = self.image_pool(imagefeatmap)
             imagefeatvec = imagefeatvec.flatten(1)
@@ -119,21 +90,15 @@ class MM(nn.Module):
             imagefeatvec_org = imagefeatvec
             output.append(imagefeatvec * self.image_weight)
         if 'vox' in opt.output_type:
-            if self.voxfe_arch == 'utonia':
-                utonia_dict = {
-                    'coord': data_dict['utonia_coord'],
-                    'grid_coord': data_dict['utonia_grid_coord'],
-                    'feat': data_dict['utonia_feat'],
-                    'rgb': data_dict['utonia_rgb'],
-                    'normal': data_dict['utonia_normal'],
-                    'offset': data_dict['utonia_offset'],
-                }
-                voxfeatmap, voxfeatmaplist = self.vox_fe(utonia_dict)
-            else:
-                # Legacy MinkFPN path — requires MinkowskiEngine
-                import MinkowskiEngine as ME
-                sptensor = ME.SparseTensor(features=data_dict['features'], coordinates=data_dict['coords'].int())
-                voxfeatmap, voxfeatmaplist = self.vox_fe(sptensor)
+            utonia_dict = {
+                'coord': data_dict['utonia_coord'],
+                'grid_coord': data_dict['utonia_grid_coord'],
+                'feat': data_dict['utonia_feat'],
+                'rgb': data_dict['utonia_rgb'],
+                'normal': data_dict['utonia_normal'],
+                'offset': data_dict['utonia_offset'],
+            }
+            voxfeatmap, voxfeatmaplist = self.vox_fe(utonia_dict)
             voxfeatvec = self.vox_pool(voxfeatmap)
             voxfeatvec = self.vox_proj(voxfeatvec)
             if opt.output_l2 is True:

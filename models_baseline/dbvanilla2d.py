@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from typing import List
-import torchvision.models as TVM
 from network.image_fe import ImageFE
 from network.image_pooling import GeM
 import torch.nn.functional as F
@@ -30,7 +29,7 @@ class DBVanilla2D(nn.Module):
         # ---- database
         if mode == 'db':
             maptype = opt.maptype.split('_')
-            self.dbimage_fes = [ImageFE(fe_type=opt.dbimage_fe, layers=opt.dbimage_fe_layers) for _ in range(len(maptype))]
+            self.dbimage_fes = [ImageFE(fe_type='dinov2_vitl14') for _ in range(len(maptype))]
             self.dbimage_pools = [GeM() for _ in range(len(maptype))]
             # self.dbimage_mlp = [nn.Linear(e.last_dim, dim) for e in self.dbimage_fes] # after pool, change dim
             self.dbimage_mlps = [MLP(e.last_dim, dim) for e in self.dbimage_fes] # after pool, change dim

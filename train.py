@@ -23,7 +23,6 @@ from torch.utils.data.distributed import DistributedSampler
 import util
 import test
 import commons
-from model.functional import sare_ind, sare_joint
 from tools.options import logging_info, logging_init, logging_end
 
 from datasets.datasets_ws_kitti360 import KITTI360BaseDataset
@@ -45,7 +44,6 @@ from network_mm.mm import MM
 
 
 from models_baseline.dbvanilla2d import DBVanilla2D
-import torchvision.models as TVM
 
 from compute_other_loss import compute_other_loss
 
@@ -120,27 +118,13 @@ def get_amp_ctx(args):
 def compute_loss(args, criterion_triplet, triplets_local_indexes, features):
     loss_triplet = 0
 
-    if args.criterion == "triplet":
-        triplets_local_indexes = torch.transpose(
-            triplets_local_indexes.view(args.train_batch_size, args.negs_num_per_query, 3), 1, 0)
-        for triplets in triplets_local_indexes:
-            queries_indexes, positives_indexes, negatives_indexes = triplets.T
-            loss_triplet += criterion_triplet(features[queries_indexes],
-                                            features[positives_indexes],
-                                            features[negatives_indexes])
-    elif args.criterion == 'sare_joint':
-        # sare_joint needs to receive all the negatives at once
-        triplet_index_batch = triplets_local_indexes.view(args.train_batch_size, 10, 3)
-        for batch_triplet_index in triplet_index_batch:
-            q = features[batch_triplet_index[0, 0]].unsqueeze(0)  # obtain query as tensor of shape 1xn_features
-            p = features[batch_triplet_index[0, 1]].unsqueeze(0)  # obtain positive as tensor of shape 1xn_features
-            n = features[batch_triplet_index[:, 2]]               # obtain negatives as tensor of shape 10xn_features
-            loss_triplet += criterion_triplet(q, p, n)
-    elif args.criterion == "sare_ind":
-        for triplet in triplets_local_indexes:
-            # triplet is a 1-D tensor with the 3 scalars indexes of the triplet
-            q_i, p_i, n_i = triplet
-            loss_triplet += criterion_triplet(features[q_i:q_i+1], features[p_i:p_i+1], features[n_i:n_i+1])
+    triplets_local_indexes = torch.transpose(
+        triplets_local_indexes.view(args.train_batch_size, args.negs_num_per_query, 3), 1, 0)
+    for triplets in triplets_local_indexes:
+        queries_indexes, positives_indexes, negatives_indexes = triplets.T
+        loss_triplet += criterion_triplet(features[queries_indexes],
+                                          features[positives_indexes],
+                                          features[negatives_indexes])
 
     del features
     loss_triplet /= (args.train_batch_size * args.negs_num_per_query)
@@ -209,14 +193,10 @@ def main():
 
 
     #---- model db
-    if args.modeldb == 'vanilla2d':
-        model = DBVanilla2D(mode='db', dim=args.features_dim)
+    model = DBVanilla2D(mode='db', dim=args.features_dim)
 
     #---- model q
-    if args.modelq == 'mm':
-        modelq = MM()
-    else:
-        raise NotImplementedError
+    modelq = MM()
 
     if is_main_process():
         num_params_q = sum(p.numel() for p in modelq.parameters())
@@ -239,14 +219,6 @@ def main():
         logging.info(f"Device: {args.device}")
 
 
-    if args.aggregation in ["netvlad", "crn"]:  # If using NetVLAD layer, initialize it
-        if not args.resume:
-            triplets_ds.is_inference = True
-            model.aggregation.initialize_netvlad_layer(args, triplets_ds, model.backbone)
-            modelq.aggregation.initialize_netvlad_layer(args, triplets_ds, modelq.backbone)
-        args.features_dim *= args.netvlad_clusters
-
-
     # ======================== DDP: SyncBatchNorm + Wrap ========================
     if use_ddp:
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -262,7 +234,7 @@ def main():
     # ==== model db optimizer params
     if isinstance(model_without_ddp, DBVanilla2D):
         params_db = []
-        if getattr(args, 'lrdino', 0.0) > 0.0 and args.dbimage_fe == 'dinov2_vitl14':
+        if getattr(args, 'lrdino', 0.0) > 0.0:
             dino_params = list(model_without_ddp.dbimage_fes.parameters())
             base_params = [p for n, p in model_without_ddp.named_parameters() if not n.startswith('dbimage_fes.')]
 
@@ -281,7 +253,7 @@ def main():
     if isinstance(modelq_without_ddp, MM):
         params_q = []
 
-        if getattr(args, 'lrdino', 0.0) > 0.0 and args.mm_imgfe == 'dinov2_vitl14':
+        if getattr(args, 'lrdino', 0.0) > 0.0:
             dino_trainable = list(filter(lambda p: p.requires_grad, modelq_without_ddp.image_fe.parameters()))
             if len(dino_trainable) > 0:
                 params_q.append({'params': dino_trainable, 'lr': args.lrdino})
@@ -289,24 +261,21 @@ def main():
             params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.image_fe.parameters()), 'lr': args.lr})
 
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.image_pool.parameters()), 'lr': args.lr})
-        if getattr(args, 'mm_voxfe_arch', 'minkfpn') == 'utonia':
-            utonia_ptv3_trainable = [p for p in modelq_without_ddp.vox_fe.ptv3.parameters() if p.requires_grad]
-            utonia_proj_trainable = [p for p in modelq_without_ddp.vox_fe.projs.parameters() if p.requires_grad]
+        utonia_ptv3_trainable = [p for p in modelq_without_ddp.vox_fe.ptv3.parameters() if p.requires_grad]
+        utonia_proj_trainable = [p for p in modelq_without_ddp.vox_fe.projs.parameters() if p.requires_grad]
 
-            # Strict semantics: lrutonia=0 -> PTv3 NOT in optimizer (no fallback to lrpc).
-            if getattr(args, 'lrutonia', 0.0) > 0.0 and len(utonia_ptv3_trainable) > 0:
-                params_q.append({'params': utonia_ptv3_trainable, 'lr': args.lrutonia})
+        # Strict semantics: lrutonia=0 -> PTv3 NOT in optimizer (no fallback to lrpc).
+        if getattr(args, 'lrutonia', 0.0) > 0.0 and len(utonia_ptv3_trainable) > 0:
+            params_q.append({'params': utonia_ptv3_trainable, 'lr': args.lrutonia})
 
-            if len(utonia_proj_trainable) > 0:
-                params_q.append({'params': utonia_proj_trainable, 'lr': args.lrpc})
+        if len(utonia_proj_trainable) > 0:
+            params_q.append({'params': utonia_proj_trainable, 'lr': args.lrpc})
 
-            # Any other trainable submodule inside vox_fe (not ptv3, not projs).
-            other_vox = [p for n, p in modelq_without_ddp.vox_fe.named_parameters()
-                         if p.requires_grad and not n.startswith('ptv3.') and not n.startswith('projs.')]
-            if len(other_vox) > 0:
-                params_q.append({'params': other_vox, 'lr': args.lrpc})
-        else:
-            params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.vox_fe.parameters()), 'lr': args.lrpc})
+        # Any other trainable submodule inside vox_fe (not ptv3, not projs).
+        other_vox = [p for n, p in modelq_without_ddp.vox_fe.named_parameters()
+                     if p.requires_grad and not n.startswith('ptv3.') and not n.startswith('projs.')]
+        if len(other_vox) > 0:
+            params_q.append({'params': other_vox, 'lr': args.lrpc})
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.vox_pool.parameters()), 'lr': args.lrpc})
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.fuseblocktoshallow.parameters()), 'lr': args.lr})
         params_q.append({'params': filter(lambda p: p.requires_grad, modelq_without_ddp.stg2fuseblock.parameters()), 'lr': args.lr})
@@ -329,31 +298,8 @@ def main():
         params_q.append({'params': [modelq_without_ddp.stg2fuse_weight], 'lr': args.lr})
 
 
-    if opt.share_qdb == True:
-        model = modelq
-        model_without_ddp = modelq_without_ddp
-        params_db = [{'params': torch.empty(0), 'lr': args.lrdb}]
-        if is_main_process():
-            logging.info(f"Sharing weights... {modelq_without_ddp.__class__.__name__} and {model_without_ddp.__class__.__name__}")
-
-
-
-    if args.aggregation == "crn":
-        crn_params = list(model_without_ddp.aggregation.crn.parameters())
-        net_params = list(model_without_ddp.backbone.parameters()) + \
-            list([m[1] for m in model_without_ddp.aggregation.named_parameters() if not m[0].startswith('crn')])
-        if args.optim == "adam":
-            optimizer = torch.optim.Adam([{'params': crn_params, 'lr': args.lr_crn_layer},
-                                        {'params': net_params, 'lr': args.lr_crn_net}])
-            if is_main_process():
-                logging.info("You're using CRN with Adam, it is advised to use SGD")
-        elif args.optim == "sgd":
-            optimizer = torch.optim.SGD([{'params': crn_params, 'lr': args.lr_crn_layer, 'momentum': 0.9, 'weight_decay': 0.001},
-                                        {'params': net_params, 'lr': args.lr_crn_net, 'momentum': 0.9, 'weight_decay': 0.001}])
-    else:
-        if args.optim == "adam":
-            optimizer = torch.optim.Adam(params_db)
-            optimizerq = torch.optim.Adam(params_q)
+    optimizer = torch.optim.Adam(params_db)
+    optimizerq = torch.optim.Adam(params_q)
 
 
     if is_main_process():
@@ -376,20 +322,13 @@ def main():
             logging.info(f"[PTv3] trainable {n_train/1e6:.2f}M / total {n_total/1e6:.2f}M")
 
 
-    if args.criterion == "triplet":
-        criterion_triplet = nn.TripletMarginLoss(margin=args.margin, p=2, reduction="sum")
-    elif args.criterion == "sare_ind":
-        criterion_triplet = sare_ind
-    elif args.criterion == "sare_joint":
-        criterion_triplet = sare_joint
+    criterion_triplet = nn.TripletMarginLoss(margin=args.margin, p=2, reduction="sum")
 
 
     #### Resume model, optimizer, and other training parameters
     if args.resume:
-        if args.aggregation != 'crn':
-            model_without_ddp, modelq_without_ddp, optimizer, best_r5, start_epoch_num, not_improved_num = util.resume_train(args, model_without_ddp, modelq_without_ddp, optimizer)
-        else:
-            model_without_ddp, modelq_without_ddp, _, best_r5, start_epoch_num, not_improved_num = util.resume_train(args, model_without_ddp, modelq_without_ddp, strict=False)
+        model_without_ddp, modelq_without_ddp, optimizer, best_r5, start_epoch_num, not_improved_num = util.resume_train(
+            args, model_without_ddp, modelq_without_ddp, optimizer)
         if is_main_process():
             logging.info(f"Resuming from epoch {start_epoch_num} with best recall@5 {best_r5:.1f}")
     else:
@@ -397,10 +336,7 @@ def main():
 
 
     if is_main_process():
-        if args.backbone.startswith('vit'):
-            logging.info(f"Output dimension of the model is {args.features_dim}")
-        else:
-            logging.info(f"Output dimension of the model is {args.features_dim}, with {util.get_flops(model_without_ddp, args.resize)}")
+        logging.info(f"Output dimension of the model is {args.features_dim}")
 
 
     #### Training loop
@@ -474,22 +410,19 @@ def main():
 
 
                 with get_amp_ctx(args):
-                    with torch.set_grad_enabled(args.train_modelq):
-                        feats_ground = modelq(data_dict, mode='q') # [b,c]
-                        feats_ground_embed = feats_ground['embedding']
-                        feats_ground_embed = feats_ground_embed.unsqueeze(1) # [b,1,c]
+                    feats_ground = modelq(data_dict, mode='q') # [b,c]
+                    feats_ground_embed = feats_ground['embedding']
+                    feats_ground_embed = feats_ground_embed.unsqueeze(1) # [b,1,c]
 
                     # dbs
-                    with torch.set_grad_enabled(args.train_modeldb):
-                        feats_aerial = model(data_dict, mode='db') # [b,11,c]
-                        feats_aerial_embed = feats_aerial['embedding']
+                    feats_aerial = model(data_dict, mode='db') # [b,11,c]
+                    feats_aerial_embed = feats_aerial['embedding']
 
                     loss = 0
-                    if opt.modelq == 'mm':
-                        otherloss = compute_other_loss(feats_ground, feats_aerial, data_dict,
-                                                    positive_thd=opt.train_positives_dist_threshold,
-                                                    negative_thd=opt.val_positive_dist_threshold)
-                        loss += otherloss
+                    otherloss = compute_other_loss(feats_ground, feats_aerial, data_dict,
+                                                   positive_thd=opt.train_positives_dist_threshold,
+                                                   negative_thd=opt.val_positive_dist_threshold)
+                    loss += otherloss
 
                     # cat
                     feats = torch.cat((feats_ground_embed, feats_aerial_embed), dim=1)

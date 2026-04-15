@@ -226,35 +226,12 @@ def top_n_voting(topn, predictions, distances, maj_weight):
 if __name__ == '__main__':
 
     from datasets.datasets_ws_nuscenes import NuScenesBaseDataset
-    from datasets.datasets_ws_nuscenes import NuScenesTripletsDataset
 
     from datasets.datasets_ws_kitti360 import KITTI360BaseDataset 
-    from datasets.datasets_ws_kitti360 import KITTI360TripletsDataset
-    from datasets.datasets_ws_kitti360 import kitti360_collate_fn
-    from datasets.datasets_ws_kitti360 import kitti360_collate_fn_cache_db
-    from datasets.datasets_ws_kitti360 import kitti360_collate_fn_cache_q
 
 
-    # from network.dinov2_locnet import DinoV2LocNet
-    # from network.image_locnet import ImageLocNet
-    # from network.mm import MM
-    # from network.mm3d import MM3D
     from network_mm.mm import MM
-    # from network_mm.mmfc import MMFC
 
-    # from models_baseline.minkloc3dv2 import MinkLoc3DV2
-    # from models_baseline.bevplace import BEVPlace
-    from models_baseline.minklocpp import MinkLocPP
-    from models_baseline.adafusion import AdaFusion
-    # from models_baseline.minklocppbev import MinkLocPPBEV
-    # from models_baseline.adafusionbev import AdaFusionBEV
-    # from models_baseline.minklocppsph import MinkLocPPSph
-    # from models_baseline.minkloc3dbev import MinkLoc3DBEV
-    # from models_baseline.lcpr import LCPR
-    from models_baseline.UMF.umf import UMF
-    from models_baseline.lcprours import LCPROurs
-    from models_baseline.mssplace import MSSPlace
-    # from models_baseline.vsgp import VSGP
     from models_baseline.dbvanilla2d import DBVanilla2D
 
     import torch
