@@ -1,23 +1,33 @@
-
-"""
-This file contains some functions and classes which can be useful in very diverse projects.
-"""
-
-import os
-import sys
-import torch
-import random
 import logging
-import traceback
-import numpy as np
-from os.path import join
+import os
+import random
 import shutil
+import sys
+import time
+import traceback
+from os.path import join
+
+import numpy as np
+import torch
+
+
+_RICH_CONSOLE = None
+
+
+def get_rich_console():
+    global _RICH_CONSOLE
+    if _RICH_CONSOLE is None:
+        try:
+            from rich import get_console, reconfigure
+
+            reconfigure(stderr=True)
+            _RICH_CONSOLE = get_console()
+        except Exception:
+            _RICH_CONSOLE = False
+    return None if _RICH_CONSOLE is False else _RICH_CONSOLE
 
 
 def make_deterministic(seed=0):
-    """Make results deterministic. If seed == -1, do not make deterministic.
-    Running the script in a deterministic way might slow it down.
-    """
     if seed == -1:
         return
     random.seed(seed)
@@ -28,50 +38,96 @@ def make_deterministic(seed=0):
     torch.backends.cudnn.benchmark = False
 
 
-def setup_logging(save_dir, console="debug",
-                  info_filename="info.log", debug_filename="debug.log"):
-    """Set up logging files and console output.
-    Creates one file for INFO logs and one for DEBUG logs.
-    Args:
-        save_dir (str): creates the folder where to save the files.
-        debug (str):
-            if == "debug" prints on console debug messages and higher
-            if == "info"  prints on console info messages and higher
-            if == None does not use console (useful when a logger has already been set)
-        info_filename (str): the name of the info file. if None, don't create info file
-        debug_filename (str): the name of the debug file. if None, don't create debug file
-    """
-    if os.path.exists(save_dir):
-        shutil.rmtree(save_dir)
-        # raise FileExistsError(f"{save_dir} already exists!")
-    
+def setup_logging(save_dir, console="info", info_filename="info.log", debug_filename="debug.log"):
     os.makedirs(save_dir, exist_ok=True)
-    # logging.Logger.manager.loggerDict.keys() to check which loggers are in use
-    base_formatter = logging.Formatter('%(asctime)s   %(message)s', "%Y-%m-%d %H:%M:%S")
-    logger = logging.getLogger('')
+    formatter = logging.Formatter("%(asctime)s   %(message)s", "%Y-%m-%d %H:%M:%S")
+    logger = logging.getLogger("")
     logger.setLevel(logging.DEBUG)
-    
+
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+
+    for noisy_logger in (
+        "faiss",
+        "faiss.loader",
+        "fsspec",
+        "fsspec.local",
+        "matplotlib",
+        "matplotlib.font_manager",
+        "PIL",
+        "torch.fx._symbolic_trace",
+        "pytorch_lightning.utilities._pytree",
+        "pytorch_lightning.loops.fit_loop",
+        "pytorch_lightning.trainer.connectors.data_connector",
+        "pytorch_lightning.trainer.connectors.logger_connector.logger_connector",
+    ):
+        logging.getLogger(noisy_logger).setLevel(logging.ERROR)
+
     if info_filename is not None:
-        info_file_handler = logging.FileHandler(join(save_dir, info_filename))
-        info_file_handler.setLevel(logging.INFO)
-        info_file_handler.setFormatter(base_formatter)
-        logger.addHandler(info_file_handler)
-    
+        info_handler = logging.FileHandler(join(save_dir, info_filename))
+        info_handler.setLevel(logging.INFO)
+        info_handler.setFormatter(formatter)
+        logger.addHandler(info_handler)
+
     if debug_filename is not None:
-        debug_file_handler = logging.FileHandler(join(save_dir, debug_filename))
-        debug_file_handler.setLevel(logging.DEBUG)
-        debug_file_handler.setFormatter(base_formatter)
-        logger.addHandler(debug_file_handler)
-    
+        debug_handler = logging.FileHandler(join(save_dir, debug_filename))
+        debug_handler.setLevel(logging.DEBUG)
+        debug_handler.setFormatter(formatter)
+        logger.addHandler(debug_handler)
+
     if console is not None:
-        console_handler = logging.StreamHandler()
-        if console == "debug":
-            console_handler.setLevel(logging.DEBUG)
-        if console == "info":
-            console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(base_formatter)
+        rich_console = get_rich_console()
+        if rich_console is not None:
+            from rich.logging import RichHandler
+
+            console_handler = RichHandler(
+                console=rich_console,
+                show_time=True,
+                show_level=False,
+                show_path=False,
+                markup=False,
+                rich_tracebacks=False,
+                log_time_format="%Y-%m-%d %H:%M:%S",
+            )
+            console_handler.setFormatter(logging.Formatter("%(message)s"))
+        else:
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(formatter)
+        console_handler.setLevel(logging.DEBUG if console == "debug" else logging.INFO)
         logger.addHandler(console_handler)
-    
+
     def exception_handler(type_, value, tb):
-        logger.info("\n" + "".join(traceback.format_exception(type, value, tb)))
+        logger.info("\n" + "".join(traceback.format_exception(type_, value, tb)))
+
     sys.excepthook = exception_handler
+
+
+def get_datetime():
+    return time.strftime("%Y%m%d_%H%M")
+
+
+def logging_init(args):
+    os.makedirs("results", exist_ok=True)
+    for path in (join("results", f"{args.exp_name}.txt"), "results.txt"):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(get_datetime())
+            f.write("\n")
+            f.write(f"{args.exp_name}\n")
+
+
+def logging_info(args, message):
+    os.makedirs("results", exist_ok=True)
+    for path in (join("results", f"{args.exp_name}.txt"), "results.txt"):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+
+
+def logging_end(args):
+    for path in (join("results", f"{args.exp_name}.txt"), "results.txt"):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n")
+            f.write(get_datetime())
+
+
+def copy_best_model(src, dst):
+    shutil.copyfile(src, dst)

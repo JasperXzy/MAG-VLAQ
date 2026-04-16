@@ -1,22 +1,22 @@
-
-
 # ======================== Single GPU ========================
-python train.py --cuda 0  --dataset nuscenes  --camnames fl_f_fr_bl_b_br
+python train.py fit \
+  --config configs/base.yaml \
+  --config configs/kitti360.yaml \
+  --config configs/exp/mm_dbvanilla2d.yaml \
+  --cuda 0
 
-
-python train.py --cuda 1  --dataset kitti360  --camnames 00
-
+python train.py fit \
+  --config configs/base.yaml \
+  --config configs/nuscenes.yaml \
+  --config configs/exp/mm_dbvanilla2d.yaml \
+  --cuda 1
 
 # ======================== Multi-GPU DDP ========================
-
-torchrun --nproc_per_node=4 train.py --dataset kitti360 --camnames 00
-
-# Example: 4 GPUs on a specific machine with custom settings
-torchrun --nproc_per_node=4 train.py \
-    --dataset kitti360 \
-    --camnames 00 \
-    --machine 5080 \
-    --train_batch_size 4 \
-    --infer_batch_size 16 \
-    --num_workers 8
-
+torchrun --nproc_per_node=4 train.py fit \
+  --config configs/base.yaml \
+  --config configs/kitti360.yaml \
+  --config configs/exp/mm_dbvanilla2d.yaml \
+  --trainer.strategy ddp_find_unused_parameters_true \
+  --data.train_batch_size 4 \
+  --data.infer_batch_size 16 \
+  --data.num_workers 8
