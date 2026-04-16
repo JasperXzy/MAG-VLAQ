@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover - older Lightning versions
         _BaseLightningCLI = object
 
 
-LIGHTNING_COMMANDS = {"fit", "validate", "test", "predict"}
+LIGHTNING_COMMANDS = {"fit", "train", "validate", "test", "predict"}
 RESERVED_CONFIG_KEYS = {"trainer", "model", "data", "ckpt_path"}
 STORE_TRUE_FLAGS = {"horizontal_flip", "efficient_ram_testing"}
 
@@ -350,8 +350,8 @@ class SCALightningCLI(_BaseLightningCLI):
         logging.info("Lightning logger: %s", type(trainer_config["logger"]).__name__)
         logging.info("Cache loops per original epoch: %d", loops_num)
 
-        if command != "fit":
-            raise ValueError(f"Only the 'fit' command is implemented, got: {command}")
+        if command not in {"fit", "train"}:
+            raise ValueError(f"Only the 'fit'/'train' command is implemented, got: {command}")
         trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
 
         if _is_rank_zero():
