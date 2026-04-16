@@ -5,6 +5,8 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
 
+import torch
+
 try:
     import pytorch_lightning as pl
 except ImportError as exc:  # pragma: no cover - depends on environment
@@ -330,27 +332,29 @@ class RetrievalEvalCallback(pl.Callback):
         self.best_r1r5r10ep = [0.0, 0.0, 0.0, 0]
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        if not trainer.is_global_zero:
-            return
-
         import test
 
-        commons = _load_lightning_commons()
         args = pl_module.args
         args.device = str(pl_module.device)
+
+        recalls_tensor = torch.zeros(3, device=pl_module.device, dtype=torch.float32)
         with _paused_lightning_progress(trainer, resume=_has_more_epochs(trainer)):
             _hide_validation_progress(trainer)
-            logging.info(
-                "retrieval eval started: database=%d queries=%d batch_size=%d",
-                trainer.datamodule.test_ds.database_num,
-                trainer.datamodule.test_ds.queries_num,
-                args.infer_batch_size,
-            )
+            if trainer.is_global_zero:
+                logging.info(
+                    "retrieval eval started: database=%d queries=%d batch_size=%d",
+                    trainer.datamodule.test_ds.database_num,
+                    trainer.datamodule.test_ds.queries_num,
+                    args.infer_batch_size,
+                )
             old_disable_dataset_tqdm = getattr(args, "disable_dataset_tqdm", False)
             old_test_progress_callback = getattr(test, "_TEST_PROGRESS_CALLBACK", None)
             args.disable_dataset_tqdm = True
             try:
-                with _TripletProgress(enabled=trainer.is_global_zero, prefix="eval") as progress:
+                with _TripletProgress(
+                    enabled=trainer.is_global_zero,
+                    prefix="eval",
+                ) as progress:
                     if hasattr(test, "set_progress_callback"):
                         test.set_progress_callback(progress if trainer.is_global_zero else None)
                     recalls, _, _ = test.test(
@@ -359,13 +363,25 @@ class RetrievalEvalCallback(pl.Callback):
                         pl_module.model,
                         test_method=args.test_method,
                         modelq=pl_module.modelq,
+                        rank=trainer.global_rank,
+                        world_size=trainer.world_size,
                     )
             finally:
                 if hasattr(test, "set_progress_callback"):
                     test.set_progress_callback(old_test_progress_callback)
                 args.disable_dataset_tqdm = old_disable_dataset_tqdm
 
-        current = [float(recalls[0]), float(recalls[1]), float(recalls[2])]
+        if trainer.is_global_zero:
+            recalls_tensor = torch.tensor(
+                [float(recalls[0]), float(recalls[1]), float(recalls[2])],
+                device=pl_module.device,
+                dtype=torch.float32,
+            )
+
+        if trainer.world_size > 1:
+            recalls_tensor = trainer.strategy.broadcast(recalls_tensor, src=0)
+
+        current = [float(value) for value in recalls_tensor.detach().cpu().tolist()]
         real_epoch = int(trainer.current_epoch) // self.loops_num
         if sum(current) > sum(self.best_r1r5r10ep[:3]):
             self.best_r1r5r10ep = [*current, real_epoch]
@@ -376,7 +392,7 @@ class RetrievalEvalCallback(pl.Callback):
             "val/R@10": current[2],
             "val/R_sum": sum(current),
         }
-        pl_module.log_dict(metrics, rank_zero_only=True, prog_bar=True)
+        pl_module.log_dict(metrics, prog_bar=True, rank_zero_only=False)
 
         now = (
             f"Now : R@1 = {current[0]:.1f}   R@5 = {current[1]:.1f}   "
@@ -388,7 +404,9 @@ class RetrievalEvalCallback(pl.Callback):
             f"R@10 = {self.best_r1r5r10ep[2]:.1f}   "
             f"epoch = {self.best_r1r5r10ep[3]:d}"
         )
-        logging.info(now)
-        logging.info(best)
-        commons.logging_info(args, now)
-        commons.logging_info(args, best)
+        if trainer.is_global_zero:
+            commons = _load_lightning_commons()
+            logging.info(now)
+            logging.info(best)
+            commons.logging_info(args, now)
+            commons.logging_info(args, best)

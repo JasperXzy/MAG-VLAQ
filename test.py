@@ -4,6 +4,7 @@ import logging
 import faiss
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Subset
 from tqdm import tqdm
@@ -60,6 +61,45 @@ def _collate_fns(args):
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
 
+def _distributed_eval_enabled(world_size):
+    return world_size > 1 and dist.is_available() and dist.is_initialized()
+
+
+def _split_indices(start, end, rank, world_size):
+    if world_size <= 1:
+        return list(range(start, end))
+    return list(range(start + rank, end, world_size))
+
+
+def _feature_store_length(test_ds, test_method):
+    if test_method in {"nearest_crop", "maj_voting"}:
+        return 5 * test_ds.queries_num + test_ds.database_num
+    return len(test_ds)
+
+
+def _to_feature_tensor(features, pca, device):
+    features = features.float()
+    if pca is None:
+        return features
+    features = pca.transform(features.cpu().numpy())
+    return torch.from_numpy(features).to(device=device, dtype=torch.float32)
+
+
+def _assign_features(all_features, indices, features, test_ds, test_method):
+    if isinstance(indices, torch.Tensor):
+        indices_cpu = indices.cpu()
+    else:
+        indices_cpu = torch.as_tensor(indices, dtype=torch.long)
+
+    if test_method in {"nearest_crop", "maj_voting"}:
+        for row, index in enumerate(indices_cpu.tolist()):
+            start = test_ds.database_num + (index - test_ds.database_num) * 5
+            all_features[start:start + 5, :] = features[row * 5:(row + 1) * 5, :]
+        return
+
+    all_features[indices_cpu.to(all_features.device), :] = features
+
+
 def compute_recall(args, queries_features, database_features, test_ds, test_method="hard_resize"):
     faiss_index = faiss.IndexFlatL2(args.features_dim)
     faiss_index.add(database_features)
@@ -105,7 +145,16 @@ def compute_recall(args, queries_features, database_features, test_ds, test_meth
     return recalls, recalls_str
 
 
-def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None):
+def test(
+    args,
+    test_ds,
+    model,
+    test_method="hard_resize",
+    pca=None,
+    modelq=None,
+    rank=0,
+    world_size=1,
+):
     assert test_method in [
         "hard_resize",
         "single_query",
@@ -130,7 +179,8 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
     with torch.no_grad(), amp_ctx:
         logging.debug("Extracting database features for evaluation/testing")
         test_ds.test_method = "hard_resize"
-        database_subset_ds = Subset(test_ds, list(range(test_ds.database_num)))
+        database_indices = _split_indices(0, test_ds.database_num, rank, world_size)
+        database_subset_ds = Subset(test_ds, database_indices)
         database_dataloader = DataLoader(
             dataset=database_subset_ds,
             num_workers=args.num_workers,
@@ -139,32 +189,36 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
             collate_fn=collate_db,
         )
 
-        if test_method in {"nearest_crop", "maj_voting"}:
-            all_features = np.empty(
-                (5 * test_ds.queries_num + test_ds.database_num, args.features_dim),
-                dtype="float32",
-            )
-        else:
-            all_features = np.empty((len(test_ds), args.features_dim), dtype="float32")
+        all_features = torch.zeros(
+            (_feature_store_length(test_ds, test_method), args.features_dim),
+            device=args.device,
+            dtype=torch.float32,
+        )
 
         db_locations = []
-        for data_dict, indices in _progress(database_dataloader, args=args, desc="db"):
+        db_desc = "db" if world_size <= 1 else f"db/rank{rank}"
+        for data_dict, indices in _progress(database_dataloader, args=args, desc=db_desc):
             for key, value in data_dict.items():
                 if isinstance(value, torch.Tensor):
                     data_dict[key] = value.to(args.device)
             features = model(data_dict, mode="db")["embedding"]
-            features = features.float().cpu().numpy()
-            if pca is not None:
-                features = pca.transform(features)
-            all_features[indices.numpy(), :] = features
+            features = _to_feature_tensor(features, pca, all_features.device)
+            _assign_features(all_features, indices, features, test_ds, "hard_resize")
             if args.dataset == "nuscenes":
                 db_locations.extend(data_dict["db_location"])
 
         logging.debug("Extracting queries features for evaluation/testing")
         queries_infer_batch_size = 1 if test_method == "single_query" else args.infer_batch_size
         test_ds.test_method = test_method
+        query_indices = _split_indices(
+            test_ds.database_num,
+            test_ds.database_num + test_ds.queries_num,
+            rank,
+            world_size,
+        )
         queries_subset_ds = Subset(
-            test_ds, list(range(test_ds.database_num, test_ds.database_num + test_ds.queries_num))
+            test_ds,
+            query_indices,
         )
         queries_dataloader = DataLoader(
             dataset=queries_subset_ds,
@@ -175,28 +229,29 @@ def test(args, test_ds, model, test_method="hard_resize", pca=None, modelq=None)
         )
 
         q_locations = []
-        for data_dict, indices in _progress(queries_dataloader, args=args, desc="q"):
+        q_desc = "q" if world_size <= 1 else f"q/rank{rank}"
+        for data_dict, indices in _progress(queries_dataloader, args=args, desc=q_desc):
             for key, value in data_dict.items():
                 if isinstance(value, torch.Tensor):
                     data_dict[key] = value.to(args.device)
             features = modelq(data_dict, mode="q")["embedding"]
             if test_method == "five_crops":
                 features = torch.stack(torch.split(features, 5)).mean(1)
-            features = features.float().cpu().numpy()
-            if pca is not None:
-                features = pca.transform(features)
-            if test_method in {"nearest_crop", "maj_voting"}:
-                start_idx = test_ds.database_num + (indices[0] - test_ds.database_num) * 5
-                end_idx = start_idx + indices.shape[0] * 5
-                all_features[np.arange(start_idx, end_idx), :] = features
-            else:
-                all_features[indices.numpy(), :] = features
+            features = _to_feature_tensor(features, pca, all_features.device)
+            _assign_features(all_features, indices, features, test_ds, test_method)
             if args.dataset == "nuscenes":
                 q_locations.extend(data_dict["query_location"])
 
-    queries_features = all_features[test_ds.database_num :]
-    database_features = all_features[: test_ds.database_num]
-    if args.dataset == "nuscenes":
+    if _distributed_eval_enabled(world_size):
+        dist.all_reduce(all_features, op=dist.ReduceOp.SUM)
+
+    if world_size > 1 and rank != 0:
+        return np.zeros(len(args.recall_values), dtype=np.float32), "", None
+
+    all_features = all_features.cpu().numpy()
+    queries_features = all_features[test_ds.database_num:]
+    database_features = all_features[:test_ds.database_num]
+    if args.dataset == "nuscenes" and world_size <= 1:
         assert len(q_locations) == len(queries_features)
         assert len(db_locations) == len(database_features)
 
