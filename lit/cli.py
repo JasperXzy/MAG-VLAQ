@@ -301,6 +301,20 @@ def _litlogger_save_logs_enabled(logging_config: Dict[str, Any]) -> bool:
     return bool(lit_config.get("enabled", False) and lit_config.get("save_logs", True))
 
 
+def _disable_litlogger_graph_logging(logger: Any):
+    if type(logger).__name__ != "LitLogger":
+        return logger
+
+    # Lightning calls logger.log_graph(...) for every logger during hyperparameter
+    # setup. LitLogger exposes the method but only emits a warning, so replace it
+    # on this instance while keeping metric/checkpoint/log uploading unchanged.
+    def _noop_log_graph(model: Any, input_array: Any = None) -> None:
+        return None
+
+    logger.log_graph = _noop_log_graph
+    return logger
+
+
 def _initialise_litlogger_capture(logger_config: Any, logging_config: Dict[str, Any]):
     if (
         not _is_rank_zero()
@@ -350,7 +364,7 @@ def _build_loggers(args: argparse.Namespace, logging_config: Dict[str, Any]):
             "checkpoint_name": lit_config.get("checkpoint_name"),
         }
         lit_kwargs = {key: value for key, value in lit_kwargs.items() if value is not None}
-        loggers.append(LitLogger(**lit_kwargs))
+        loggers.append(_disable_litlogger_graph_logging(LitLogger(**lit_kwargs)))
 
     if not loggers:
         return False
