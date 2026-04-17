@@ -8,7 +8,6 @@ import numpy as np
 import open3d as o3d
 import torch
 import torchvision.transforms as T
-import torchvision.transforms as TVT
 import utm
 from PIL import Image
 from sklearn.neighbors import NearestNeighbors

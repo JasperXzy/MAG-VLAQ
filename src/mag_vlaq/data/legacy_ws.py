@@ -8,7 +8,6 @@ from os.path import join
 import numpy as np
 import torch
 import torchvision.transforms as T
-import torchvision.transforms as TVT
 from PIL import Image
 from sklearn.neighbors import NearestNeighbors
 from torch.utils import data

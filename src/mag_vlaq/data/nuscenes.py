@@ -8,7 +8,6 @@ from os.path import join
 import numpy as np
 import torch
 import torchvision.transforms as T
-import torchvision.transforms as TVT
 import utm
 from nuscenes.nuscenes import NuScenes
 from PIL import Image
@@ -20,31 +19,6 @@ from mag_vlaq.data.pc_augmentation import (
     PCRandomRotation,
 )
 from mag_vlaq.models.layers.sparse_utils import batched_coordinates, sparse_quantize
-
-# trainselectlocationlist = [  # define which location to use
-#     "2013_05_28_drive_0000_sync",
-#     "2013_05_28_drive_0002_sync",
-#     "2013_05_28_drive_0003_sync",
-#     "2013_05_28_drive_0004_sync",
-#     "2013_05_28_drive_0005_sync",
-#     "2013_05_28_drive_0006_sync",
-#     "2013_05_28_drive_0007_sync",
-#     "2013_05_28_drive_0009_sync",
-#     "2013_05_28_drive_0010_sync",
-# ]
-
-# testselectlocationlist = [
-#     "2013_05_28_drive_0000_sync",
-#     "2013_05_28_drive_0002_sync",
-#     "2013_05_28_drive_0003_sync",
-#     "2013_05_28_drive_0004_sync",
-#     "2013_05_28_drive_0005_sync",
-#     "2013_05_28_drive_0006_sync",
-#     "2013_05_28_drive_0007_sync",
-#     "2013_05_28_drive_0009_sync",
-#     "2013_05_28_drive_0010_sync",
-# ]
-
 
 trainselectlocationlist = ["singapore-onenorth", "singapore-hollandvillage", "singapore-queenstown", "boston-seaport"]
 
@@ -81,13 +55,6 @@ def nuscenes_collate_fn(batch):
         triplets_local_indexes: torch tensor of shape (batch_size*10, 3).
         triplets_global_indexes: torch tensor of shape (batch_size, 12).
     """
-    # image
-    # bev
-    # pc
-    # images = torch.cat([e[0]['image'] for e in batch]) # [12,c,h,w] -> [b*12,c,h,w]
-    # bevs = torch.stack([e[0]['bev'] for e in batch]) # [3,h,w] -> [b,3,h,w]
-    # sphs = torch.stack([e[0]['sph'] for e in batch]) # [3,h,w] -> [b,3,h,w]
-    # pcs = [e[0]['pc'] for e in batch]
     query_pc = [e[0]["query_pc"] for e in batch]
     query_image = torch.stack([e[0]["query_image"] for e in batch])
     query_bev = torch.stack([e[0]["query_bev"] for e in batch])
@@ -95,8 +62,6 @@ def nuscenes_collate_fn(batch):
     query_eastnorth = torch.stack([e[0]["query_eastnorth"] for e in batch])
     db_map = torch.stack([e[0]["db_map"] for e in batch])
     db_eastnorth = torch.stack([e[0]["db_eastnorth"] for e in batch])
-    # positive_db_map = torch.stack([e[0]['positive_db_map'] for e in batch])
-    # negative_db_maps = torch.stack([e[0]['negative_db_maps'] for e in batch])
     # ---- batch augmentation (quantize is in __getitem__)
     coords = batched_coordinates(query_pc)
     batchids = coords[:, :1]
@@ -220,17 +185,17 @@ def nuscenes_collate_fn_cache_q(batch):
 #     image = Image.open(datapath)
 #     image = image.convert('RGB')
 #     if split == 'train':
-#         tf = TVT.Compose([TVT.Resize(args.q_resize),
-#                         # TVT.ColorJitter(brightness=args.q_jitter, contrast=args.q_jitter, saturation=args.q_jitter, hue=min(0.5, args.q_jitter)),
-#                         TVT.ToTensor(),
-#                           TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-#                         # TVT.Normalize(mean=0.5, std=0.22)
+#         tf = T.Compose([T.Resize(args.q_resize),
+#                         # T.ColorJitter(brightness=args.q_jitter, contrast=args.q_jitter, saturation=args.q_jitter, hue=min(0.5, args.q_jitter)),
+#                         T.ToTensor(),
+#                           T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+#                         # T.Normalize(mean=0.5, std=0.22)
 #                         ])
 #     elif split == 'test':
-#         tf = TVT.Compose([TVT.Resize(args.q_resize),
-#                         TVT.ToTensor(),
-#                           TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-#                         # TVT.Normalize(mean=0.5, std=0.22)
+#         tf = T.Compose([T.Resize(args.q_resize),
+#                         T.ToTensor(),
+#                           T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+#                         # T.Normalize(mean=0.5, std=0.22)
 #                         ])
 #     image = tf(image)
 #     return image
@@ -240,24 +205,24 @@ def load_dbimage(datapath, split, args):
     image = Image.open(datapath)
     image = image.convert("RGB")
     if split == "train":
-        tf = TVT.Compose(
+        tf = T.Compose(
             [
-                # TVT.CenterCrop(args.db_cropsize),
-                TVT.Resize((args.db_resize, args.db_resize), antialias=True),
-                # TVT.ColorJitter(brightness=args.db_jitter, contrast=args.db_jitter, saturation=args.db_jitter, hue=min(0.5, args.db_jitter)),
-                TVT.ToTensor(),
-                TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                # TVT.Normalize(mean=0.5, std=0.22)
+                # T.CenterCrop(args.db_cropsize),
+                T.Resize((args.db_resize, args.db_resize), antialias=True),
+                # T.ColorJitter(brightness=args.db_jitter, contrast=args.db_jitter, saturation=args.db_jitter, hue=min(0.5, args.db_jitter)),
+                T.ToTensor(),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                # T.Normalize(mean=0.5, std=0.22)
             ]
         )
     elif split == "test":
-        tf = TVT.Compose(
+        tf = T.Compose(
             [
-                # TVT.CenterCrop(args.db_cropsize),
-                TVT.Resize((args.db_resize, args.db_resize), antialias=True),
-                TVT.ToTensor(),
-                TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                # TVT.Normalize(mean=0.5, std=0.22)
+                # T.CenterCrop(args.db_cropsize),
+                T.Resize((args.db_resize, args.db_resize), antialias=True),
+                T.ToTensor(),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                # T.Normalize(mean=0.5, std=0.22)
             ]
         )
     else:
@@ -361,28 +326,28 @@ def load_pc_bev(file_path, split, args):  # filename is the same as load_pc
         raise NotImplementedError
 
     if split == "train":
-        tf = TVT.Compose(
+        tf = T.Compose(
             [
-                TVT.Resize(resize_size, interpolation=resize_mode, antialias=True),
-                TVT.RandomRotation(args.bev_rotate, interpolation=rotate_mode),
-                TVT.CenterCrop(args.bev_cropsize),
-                TVT.ColorJitter(
+                T.Resize(resize_size, interpolation=resize_mode, antialias=True),
+                T.RandomRotation(args.bev_rotate, interpolation=rotate_mode),
+                T.CenterCrop(args.bev_cropsize),
+                T.ColorJitter(
                     brightness=args.bev_jitter,
                     contrast=args.bev_jitter,
                     saturation=args.bev_jitter,
                     hue=min(0.5, args.bev_jitter),
                 ),
-                TVT.ToTensor(),
-                TVT.Normalize(mean=args.bev_mean, std=args.bev_std),
+                T.ToTensor(),
+                T.Normalize(mean=args.bev_mean, std=args.bev_std),
             ]
         )
     elif split == "test":
-        tf = TVT.Compose(
+        tf = T.Compose(
             [
-                TVT.Resize(resize_size, interpolation=resize_mode, antialias=True),
-                TVT.CenterCrop(args.bev_cropsize),
-                TVT.ToTensor(),
-                TVT.Normalize(mean=args.bev_mean, std=args.bev_std),
+                T.Resize(resize_size, interpolation=resize_mode, antialias=True),
+                T.CenterCrop(args.bev_cropsize),
+                T.ToTensor(),
+                T.Normalize(mean=args.bev_mean, std=args.bev_std),
             ]
         )
     else:
@@ -390,7 +355,7 @@ def load_pc_bev(file_path, split, args):  # filename is the same as load_pc
     bev = tf(bev)
     # # ---- DEBUG:viz
     # bev = bev*args.bev_std + args.bev_mean
-    # bev = TVT.ToPILImage()(bev)
+    # bev = T.ToPILImage()(bev)
     # bev.show()
     return pc, bev
 
@@ -405,25 +370,25 @@ def load_pc_sph(file_path, split, args):  # filename is the same as load_pc
     resize_ratio = random.uniform(args.sph_resize, 2 - args.sph_resize)
     resize_size = int(resize_ratio * min(_w, _h))
     if split == "train":
-        tf = TVT.Compose(
+        tf = T.Compose(
             [
-                TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST, antialias=True),
-                TVT.ColorJitter(
+                T.Resize(resize_size, interpolation=InterpolationMode.NEAREST, antialias=True),
+                T.ColorJitter(
                     brightness=args.sph_jitter,
                     contrast=args.sph_jitter,
                     saturation=args.sph_jitter,
                     hue=min(0.5, args.sph_jitter),
                 ),
-                TVT.ToTensor(),
-                TVT.Normalize(mean=args.sph_mean, std=args.sph_std),
+                T.ToTensor(),
+                T.Normalize(mean=args.sph_mean, std=args.sph_std),
             ]
         )
     elif split == "test":
-        tf = TVT.Compose(
+        tf = T.Compose(
             [
-                TVT.Resize(resize_size, interpolation=InterpolationMode.NEAREST, antialias=True),
-                TVT.ToTensor(),
-                TVT.Normalize(mean=args.sph_mean, std=args.sph_std),
+                T.Resize(resize_size, interpolation=InterpolationMode.NEAREST, antialias=True),
+                T.ToTensor(),
+                T.Normalize(mean=args.sph_mean, std=args.sph_std),
             ]
         )
     else:
@@ -540,8 +505,8 @@ def load_sensordata_from_sampletoken(nusc, sample_token, args):
             # bevdatapath = datapath.replace('.pcd.bin', '.png')
             # bevdatapath = bevdatapath.replace('samples/LIDAR_TOP', f'samples/BEV_DATA_w{w}_thd{max_thd}')
             # bev = Image.open(bevdatapath).convert('RGB')
-            # tf = TVT.Compose([TVT.ToTensor(),
-            #                 TVT.Resize(256, antialias=True), # [3,32,32]
+            # tf = T.Compose([T.ToTensor(),
+            #                 T.Resize(256, antialias=True), # [3,32,32]
             #                 ])
             # bev = tf(bev)
             # sensordatas['BEV_DATA'] = bev
@@ -551,11 +516,11 @@ def load_sensordata_from_sampletoken(nusc, sample_token, args):
             datapath[-2] += f"_size{256}"
             datapath = "/".join(datapath)
             image = Image.open(datapath)
-            tf = TVT.Compose(
+            tf = T.Compose(
                 [
-                    TVT.Resize((args.q_resize, args.q_resize), antialias=True),
-                    TVT.ToTensor(),
-                    TVT.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    T.Resize((args.q_resize, args.q_resize), antialias=True),
+                    T.ToTensor(),
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                 ]
             )
             image = tf(image)
