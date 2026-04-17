@@ -97,12 +97,11 @@ def batched_coordinates(point_clouds):
         Tensor [N_total, 4] with (batch_idx, x, y, z)
     """
     coords_list = []
-    for i, pc in enumerate(point_clouds):
-        if isinstance(pc, np.ndarray):
-            pc = torch.from_numpy(pc)
-        pc = pc.float()
-        batch_ids = torch.full((pc.shape[0], 1), i, dtype=pc.dtype, device=pc.device)
-        coords_list.append(torch.cat([batch_ids, pc], dim=1))
+    for i, point_cloud in enumerate(point_clouds):
+        coords = torch.from_numpy(point_cloud) if isinstance(point_cloud, np.ndarray) else point_cloud
+        coords = coords.float()
+        batch_ids = torch.full((coords.shape[0], 1), i, dtype=coords.dtype, device=coords.device)
+        coords_list.append(torch.cat([batch_ids, coords], dim=1))
     return torch.cat(coords_list, dim=0)
 
 

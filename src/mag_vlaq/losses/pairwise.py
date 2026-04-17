@@ -54,13 +54,9 @@ def compute_other_loss(feats_ground, feats_aerial, data_dict, positive_thd=10, n
     eastnorth_AG = torch.cat([eastnorth_A, eastnorth_G], dim=0)  # [b+b*ndb,2]
 
     # Loss between AG-AG
-    feats_Aembed
     feats_AembedGembed = torch.cat([feats_Aembed, feats_Gembed], dim=0)  # [b+b*ndb,c]
     feats_AembedGimageorg = torch.cat([feats_Aembed, feats_Gimageorg], dim=0)  # [b+b*ndb,c]
     feats_AembedGvoxorg = torch.cat([feats_Aembed, feats_Gvoxorg], dim=0)  # [b+b*ndb,c]
-    feats_Gembed
-    feats_Gimageorg
-    feats_Gvoxorg
 
     featsdist_Aembed_Aembed = torch.cdist(feats_Aembed, feats_Aembed)
     featsdist_Gembed_AembedGembed = torch.cdist(feats_Gembed, feats_AembedGembed)

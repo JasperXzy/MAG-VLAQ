@@ -2,22 +2,27 @@ import logging
 import os
 import sys
 import traceback
+from functools import cache
 from os.path import join
 
-_RICH_CONSOLE = None
+try:
+    from rich import get_console, reconfigure
+    from rich.logging import RichHandler
+except ImportError:
+    get_console = None
+    reconfigure = None
+    RichHandler = None
 
 
+@cache
 def get_rich_console():
-    global _RICH_CONSOLE
-    if _RICH_CONSOLE is None:
-        try:
-            from rich import get_console, reconfigure
-
-            reconfigure(stderr=True)
-            _RICH_CONSOLE = get_console()
-        except Exception:
-            _RICH_CONSOLE = False
-    return None if _RICH_CONSOLE is False else _RICH_CONSOLE
+    if get_console is None or reconfigure is None:
+        return None
+    try:
+        reconfigure(stderr=True)
+        return get_console()
+    except Exception:
+        return None
 
 
 def setup_logging(
@@ -64,9 +69,7 @@ def setup_logging(
 
     if console is not None:
         rich_console = get_rich_console()
-        if rich_console is not None:
-            from rich.logging import RichHandler
-
+        if rich_console is not None and RichHandler is not None:
             console_handler = RichHandler(
                 console=rich_console,
                 show_time=True,
