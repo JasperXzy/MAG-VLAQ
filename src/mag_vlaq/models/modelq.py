@@ -148,7 +148,7 @@ class ModelQ(nn.Module):
         elif "addorg" in self.args.output_type:
             if "vox" in self.args.output_type:
                 addorgvec = imagefeatvec_org + voxfeatvec_org
-            shallowfeatvecorg = shallowfeatvec
+            shallowfeatvecorg = addorgvec
             if self.args.output_l2 is True:
                 addorgvec = F.normalize(addorgvec, dim=-1)
             output.append(addorgvec * self.shallow_weight)
