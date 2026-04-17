@@ -15,9 +15,7 @@ class DiffBlock(nn.Module):
 
         for e in diff_type.split("_"):
             e, act = e.split("@")
-            if e is None:
-                None
-            elif e == "fcode":
+            if e == "fcode":
                 self.blocks.append(FCODE(dim, act, args=self.args))
             else:
                 raise NotImplementedError

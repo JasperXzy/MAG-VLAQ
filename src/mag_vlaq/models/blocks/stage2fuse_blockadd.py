@@ -23,7 +23,7 @@ class SparseLinear(nn.Module):
 
 
 def select_act(act):
-    if act is None or act is None:
+    if act is None:
         out = nn.Identity()
     elif act == "relu":
         out = nn.ReLU()
@@ -98,9 +98,7 @@ class FFNFuse(nn.Module):
         self.stg2fuse_type = stg2fuse_type.split("_")
         self.ffns = nn.ModuleList()
         for e in self.stg2fuse_type:
-            if e is None:
-                None
-            elif e == "basic":
+            if e == "basic":
                 self.ffns.append(Basic(dim))
             else:
                 raise NotImplementedError
@@ -178,9 +176,7 @@ class Stage2FuseBlockAdd(nn.Module):
                 imgoutvec = self.poolimage(imgmap).flatten(1)
                 voxoutvec = self.poolvox(voxmap).flatten(1)
 
-                if self.args.stg2fuse_type is None:
-                    None
-                else:
+                if self.args.stg2fuse_type is not None:
                     imgmap_fuse = projimgfuse(imgmap)
                     voxmap_fuse = projvoxfuse(voxmap)
                     imgvec_fuse = F.adaptive_avg_pool2d(imgmap_fuse, [1, 1]).squeeze(-1).squeeze(-1)
@@ -193,68 +189,7 @@ class Stage2FuseBlockAdd(nn.Module):
 
         return fusevec, imgoutvec, None, voxoutvec
 
-    def forward_imgbev(self, imagemap, bevmap, voxmap, fusevec):
-        # imagefeatmap: [b, c, h, w]
-        # bevfeatmap: [b, c, h, w]
-        # fusevec: [b, c]
-        # assert imagemap.shape[1] == bevmap.shape[1]
-        # assert imagemap.shape[1] == fusevec.shape[1]
-        for i in range(self.args.stg2nlayers):
-            projfuseimage = self.projsfuseimg[i]
-            projfusebev = self.projsfusebev[i]
-            # projfusevox = self.projsfusevox[i]
-            ffnimage = self.ffnsimg[i]
-            ffnbev = self.ffnsbev[i]
-            # ffnvox = self.ffnsvox[i]
-            projimgfuse = self.projsimgfuse[i]
-            projbevfuse = self.projsbevfuse[i]
-            # projvoxfuse = self.projsvoxfuse[i]
-            ffnfuse = self.ffnsfuse[i]
-
-            if self.args.stg2_type == "full":
-                fusevec_image = projfuseimage(fusevec)
-                fusevec_bev = projfusebev(fusevec)
-                # fusevec_vox = projfusevox(fusevec)
-                imagemap = imagemap + fusevec_image.unsqueeze(-1).unsqueeze(-1)
-                bevmap = bevmap + fusevec_bev.unsqueeze(-1).unsqueeze(-1)
-                # voxmap = ME_broadcast_add(voxmap, fusevec_vox)
-
-                imagemap = ffnimage(imagemap)
-                bevmap = ffnbev(bevmap)
-                # voxmap = ffnvox(voxmap)
-                imageoutvec = self.poolimage(imagemap).flatten(1)
-                bevoutvec = self.poolbev(bevmap).flatten(1)
-                # voxoutvec = self.poolvox(voxmap).flatten(1)
-
-                if self.args.stg2fuse_type == "res":
-                    None
-                else:
-                    imgmap_fuse = projimgfuse(imagemap)
-                    bevmap_fuse = projbevfuse(bevmap)
-                    # voxmap_fuse = projvoxfuse(voxmap)
-                    imgvec_fuse = F.adaptive_avg_pool2d(imgmap_fuse, [1, 1]).squeeze(-1).squeeze(-1)
-                    bevvec_fuse = F.adaptive_avg_pool2d(bevmap_fuse, [1, 1]).squeeze(-1).squeeze(-1)
-                    # voxvec_fuse = ME.MinkowskiGlobalAvgPooling()(voxmap_fuse)
-                    fusevec = fusevec + imgvec_fuse + bevvec_fuse
-                    # fusevec = fusevec + imagevec_fuse + voxvec_fuse.F
-                    fusevec = ffnfuse(fusevec)
-
-            elif self.args.stg2_type == "image_bev":
-                imagemap = ffnimage(imagemap)
-                bevmap = ffnbev(bevmap)
-                imageoutvec = self.poolimage(imagemap).flatten(1)
-                bevoutvec = self.poolbev(bevmap).flatten(1)
-            else:
-                raise NotImplementedError
-
-        return fusevec, imageoutvec, bevoutvec, None
-        # return fusevec, imageoutvec, None, voxoutvec
-
     def forward(self, imagemap, bevmap, voxmap, fusevec, type):
-        if type == "vox":
-            fusevec, imageoutvec, bevoutvec, voxoutvec = self.forward_imgvox(imagemap, bevmap, voxmap, fusevec)
-        elif type == "bev":
-            fusevec, imageoutvec, bevoutvec, voxoutvec = self.forward_imgbev(imagemap, bevmap, voxmap, fusevec)
-        else:
+        if type != "vox":
             raise NotImplementedError
-        return fusevec, imageoutvec, bevoutvec, voxoutvec
+        return self.forward_imgvox(imagemap, bevmap, voxmap, fusevec)
