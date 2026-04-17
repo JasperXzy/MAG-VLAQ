@@ -1,3 +1,11 @@
+data:
+  machine: 5080
+  epochs_num: 100
+  train_batch_size: 2
+  infer_batch_size: 12
+  num_workers: 8
+  cache_num_workers: 8
+
 paths:
   kitti360: /home/jasperxzy/Datasets/cmvpr/kitti360/KITTI-360
   nuscenes: /home/jasperxzy/Datasets/radar/nuscenes

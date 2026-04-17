@@ -23,9 +23,8 @@ Single GPU:
 ```bash
 python train.py fit \
   --config configs/base.yaml \
-  --config configs/kitti360.yaml \
-  --config configs/exp/mm_dbvanilla2d.yaml \
-  --trainer.devices 1
+  --config configs/machines/5080.yaml \
+  --config configs/exp/baseline.yaml
 ```
 
 Installed entrypoint:
@@ -33,9 +32,8 @@ Installed entrypoint:
 ```bash
 mag-vlaq-train fit \
   --config configs/base.yaml \
-  --config configs/kitti360.yaml \
-  --config configs/exp/mm_dbvanilla2d.yaml \
-  --trainer.devices 1
+  --config configs/machines/5080.yaml \
+  --config configs/exp/baseline.yaml
 ```
 
 DDP:
@@ -43,8 +41,8 @@ DDP:
 ```bash
 torchrun --nproc_per_node=4 train.py fit \
   --config configs/base.yaml \
-  --config configs/kitti360.yaml \
-  --config configs/exp/mm_dbvanilla2d.yaml \
+  --config configs/machines/4090.yaml \
+  --config configs/exp/baseline.yaml \
   --trainer.strategy ddp_find_unused_parameters_true
 ```
 
@@ -53,8 +51,8 @@ Resume:
 ```bash
 python train.py fit \
   --config configs/base.yaml \
-  --config configs/kitti360.yaml \
-  --config configs/exp/mm_dbvanilla2d.yaml \
+  --config configs/machines/5080.yaml \
+  --config configs/exp/baseline.yaml
   --ckpt_path logs/<exp>/checkpoints/last.ckpt
 ```
 
@@ -63,8 +61,8 @@ Small smoke run:
 ```bash
 python train.py fit \
   --config configs/base.yaml \
-  --config configs/kitti360.yaml \
-  --config configs/exp/mm_dbvanilla2d.yaml \
+  --config configs/machines/5080.yaml \
+  --config configs/exp/baseline.yaml \
   --data.epochs_num 1 \
   --data.queries_per_epoch 400 \
   --data.cache_refresh_rate 400 \

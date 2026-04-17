@@ -2,7 +2,7 @@ trainer:
   accelerator: gpu
   devices: auto
   strategy: auto
-  precision: 32-true
+  precision: bf16-mixed
   reload_dataloaders_every_n_epochs: 1
   accumulate_grad_batches: 1
   log_every_n_steps: 20
@@ -10,17 +10,22 @@ trainer:
   enable_model_summary: false
 
 model:
-  features_dim: 256
+  features_dim: 512
+  mm_stg2fuse_dim: 512
+  dino_extract_blocks: [7, 15, 23]
+  utonia_extract_stages: [2, 3, 4]
+  mm_voxfe_planes: [512, 512, 512]
+  mm_voxfe_dim: 512
   margin: 0.1
   lr: 0.00001
   lrdb: 0.00001
-  lrdino: 0.0
+  lrdino: 0.000001
   lrpc: 0.0001
-  lrutonia: 0.00001
+  lrutonia: 0.000001
   tripletloss_weight: 1.0
   otherloss_type: bce
   otherloss_weight: 0.01
-  amp_dtype: none
+  amp_dtype: bf16
   image_learnweight: true
   vox_learnweight: true
   shallow_learnweight: true
@@ -30,6 +35,10 @@ model:
   stg2imagevox_learnweight: true
   stg2fuse_weight: 0.1
   stg2fuse_learnweight: true
+
+logging:
+  litlogger:
+    teamspace: MAG-VLAQ
 
 data:
   train_batch_size: 2

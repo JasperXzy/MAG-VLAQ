@@ -1,7 +1,6 @@
 data:
   dataset: nuscenes
   dataset_name: nuscenes
-  machine: 5080
   camnames: [fl, f, fr, bl, b, br]
   maptype: [satellite]
   traindownsample: 4

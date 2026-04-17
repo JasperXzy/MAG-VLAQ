@@ -1,3 +1,11 @@
+data:
+  machine: 4090
+  epochs_num: 100
+  train_batch_size: 3
+  infer_batch_size: 24
+  num_workers: 8
+  cache_num_workers: 8
+
 paths:
   kitti360: /mnt/sda/ZhengyiXu/datasets/cmvpr/kitti360/KITTI-360
   nuscenes: /mnt/sda/ZhengyiXu/datasets/radar/nuscenes

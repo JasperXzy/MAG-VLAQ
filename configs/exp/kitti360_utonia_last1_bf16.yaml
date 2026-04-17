@@ -16,7 +16,9 @@ model:
   utonia_pretrained: "~/.cache/utonia/ckpt/utonia.pth"
   lrutonia: 0.000001
   unfreeze_utonia_mode: last1
-  utonia_extract_stages: [0, 2, 4]
+  utonia_extract_stages: [2, 3, 4]
+  mm_voxfe_planes: [512, 512, 512]
+  mm_voxfe_dim: 512
 
 data:
   dataset: kitti360

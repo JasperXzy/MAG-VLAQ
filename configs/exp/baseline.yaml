@@ -1,0 +1,57 @@
+exp_name: kitti360_baseline
+save_dir: logs/kitti360_baseline
+
+trainer:
+  devices: auto
+  precision: bf16-mixed
+  log_every_n_steps: 20
+  enable_progress_bar: true
+
+model:
+  features_dim: 512
+  mm_imgfe_dim: 1024
+  mm_stg2fuse_dim: 512
+  dino_extract_blocks: [7, 15, 23]
+  utonia_pretrained: "~/.cache/utonia/ckpt/utonia.pth"
+  utonia_extract_stages: [2, 3, 4]
+  mm_voxfe_planes: [512, 512, 512]
+  mm_voxfe_dim: 512
+  amp_dtype: bf16
+  lr: 0.00001
+  lrdino: 0.000001
+  lrutonia: 0.000001
+  unfreeze_dino_mode: last2
+  unfreeze_utonia_mode: last1
+  output_type: [image, vox, shallow]
+  final_type: [imageorg, voxorg, shalloworg, stg2image, stg2vox]
+  final_fusetype: add
+  output_l2: true
+  final_l2: false
+
+data:
+  dataset: kitti360
+  dataset_name: kitti360
+  camnames: ["00"]
+  maptype: [satellite]
+  traindownsample: 4
+  train_ratio: 0.85
+  read_pc: true
+
+logging:
+  csv:
+    enabled: true
+    name: lightning_logs
+  litlogger:
+    enabled: true
+    name: kitti360_baseline
+    root_dir: logs/kitti360_baseline
+    save_logs: true
+    store_step: true
+    log_model: false
+    metadata:
+      dataset: kitti360
+      backbone: dinov2_vitl14_utonia
+      dino_blocks: "7,15,23"
+      utonia_stages: "2,3,4"
+      fusion_dim: 512
+      note: "kitti360 baseline"

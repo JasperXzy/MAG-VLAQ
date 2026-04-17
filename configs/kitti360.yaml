@@ -1,7 +1,6 @@
 data:
   dataset: kitti360
   dataset_name: kitti360
-  machine: 5080
   camnames: ["00"]
   maptype: [satellite]
   traindownsample: 4
