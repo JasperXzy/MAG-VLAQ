@@ -92,10 +92,6 @@ class ModelDB(nn.Module):
         return output_dict
 
     def forward(self, data_dict, mode: list[str]):
-        if mode == "q":
-            x = self.forward_q(data_dict)
-        elif mode == "db":
-            x = self.forward_db(data_dict)
-        else:
+        if mode != "db":
             raise NotImplementedError
-        return x
+        return self.forward_db(data_dict)
