@@ -1,22 +1,23 @@
 import logging
-import sys
-from pathlib import Path
 
 import torch
 from torch import nn
 
 from mag_vlaq.models.layers.sparse_utils import SimpleSparse
 
-# Add Utonia to python path dynamically
-utonia_path = Path(__file__).resolve().parents[4] / "demo" / "Utonia"
-utonia_path = str(utonia_path)
-if utonia_path not in sys.path:
-    sys.path.append(utonia_path)
-
-from utonia.model import PointTransformerV3  # noqa: E402
-from utonia.model import load as utonia_load  # noqa: E402
-from utonia.structure import Point  # noqa: E402
-from utonia.utils import offset2batch  # noqa: E402
+try:
+    from utonia.model import PointTransformerV3
+    from utonia.model import load as utonia_load
+    from utonia.structure import Point
+    from utonia.utils import offset2batch
+except ModuleNotFoundError as exc:
+    missing = exc.name or ""
+    if missing == "utonia" or missing.startswith("utonia."):
+        raise ModuleNotFoundError(
+            "Utonia must be installed in the active Python environment. "
+            "Install it with `pip install -e /path/to/Utonia` or the equivalent package install before training."
+        ) from exc
+    raise
 
 _LOG = logging.getLogger(__name__)
 

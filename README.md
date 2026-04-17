@@ -16,6 +16,13 @@ This installs the `mag_vlaq` package and the `mag-vlaq-train` console command. T
 `train.py` entrypoint also works without installation because it adds `src/` to
 `sys.path`.
 
+Utonia must be installed in the same Python environment before running the
+query model:
+
+```bash
+pip install -e /path/to/Utonia
+```
+
 ## Train
 
 Single GPU:
