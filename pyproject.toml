@@ -8,8 +8,60 @@ version = "0.1.0"
 description = "Lightning training package for MAG-VLAQ"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.12",
+    "pre-commit>=3.7",
+]
+
 [project.scripts]
 mag-vlaq-train = "mag_vlaq.lightning.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "demo",
+    "logs",
+    "docs",
+    ".codex",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "PL",   # pylint
+    "RUF",  # ruff-specific
+    "NPY",  # numpy
+    "PERF", # perflint
+]
+ignore = [
+    "E501",    # line too long (handled by formatter; leave long lines for shape comments)
+    "PLR0913", # too many arguments
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "PLR2004", # magic value used in comparison
+    "PLR0911", # too many return statements
+    "B008",    # do not perform function call in argument defaults (common in torch/lightning)
+    "SIM108",  # use ternary operator (often hurts readability with torch ops)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports
+
+[tool.ruff.lint.isort]
+known-first-party = ["mag_vlaq"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
