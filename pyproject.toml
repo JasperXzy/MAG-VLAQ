@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sca-agplace"
+version = "0.1.0"
+description = "Lightning training package for SCA-AGPlace"
+requires-python = ">=3.10"
+
+[project.scripts]
+sca-train = "sca.lightning.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

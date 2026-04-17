@@ -3,8 +3,8 @@ import sys
 
 
 def _setup_paths():
-    here = Path(__file__).resolve().parent
-    candidates = [here, here / "src", here.parent]
+    repo_root = Path(__file__).resolve().parent
+    candidates = [repo_root, repo_root / "src"]
     for path in reversed(candidates):
         path_str = str(path)
         if path_str not in sys.path:
@@ -13,14 +13,7 @@ def _setup_paths():
 
 _setup_paths()
 
-from lit.cli import SCALightningCLI
-
-
-def cli_main():
-    SCALightningCLI(
-        model_class="lit.module:SCAModule",
-        datamodule_class="lit.datamodule:SCADataModule",
-    )
+from sca.lightning.cli import main as cli_main
 
 
 if __name__ == "__main__":
