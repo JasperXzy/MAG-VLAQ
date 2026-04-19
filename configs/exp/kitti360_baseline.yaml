@@ -1,0 +1,51 @@
+trainer:
+  precision: bf16-mixed
+
+model:
+  output_type: image_vox_shallow
+  final_type: imageorg_voxorg_shalloworg_stg2image_stg2vox
+  final_fusetype: add
+  final_l2: false
+  output_l2: true
+  image_embed: stg2image
+  cloud_embed: stg2vox
+  features_dim: 512
+  mm_imgfe_dim: 1024
+  mm_stg2fuse_dim: 512
+  q_resize: 224
+  db_resize: 224
+  amp_dtype: bf16
+  lr: 0.00001
+  lrdb: 0.00001
+  lrpc: 0.0001
+  lrdino: 0.000001
+  unfreeze_dino_mode: last2
+  dino_extract_blocks: "7_15_23"
+  utonia_pretrained: "~/.cache/utonia/ckpt/utonia.pth"
+  lrutonia: 0.000001
+  unfreeze_utonia_mode: last1
+  utonia_extract_stages: "0_2_4"
+  fuse_summary_mode: mean
+
+data:
+  dataset: kitti360
+  machine: 4090
+  epochs_num: 100
+  train_batch_size: 3
+  infer_batch_size: 32
+
+logging:
+  litlogger:
+    enabled: true
+    name: kitti360_baseline
+    root_dir: logs
+    save_logs: true
+    metadata:
+      dataset: kitti360
+      dino_blocks: "7,15,23"
+      utonia_stages: "0,2,4"
+      fusion_dim: "512"
+      note: "legacy baseline behavior: R71523 U024 FD512 SFD512 no VLAQ"
+      repository_name: MAG-VLAQ
+      repository_branch: main
+      repository_commit_hash: cb70d2b79

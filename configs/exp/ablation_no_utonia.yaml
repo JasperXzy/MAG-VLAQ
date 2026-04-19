@@ -1,8 +1,0 @@
-model:
-  output_type: image_vox_shallow
-  final_type: imageorg_voxorg_shalloworg_stg2image_stg2vox
-  unfreeze_utonia_mode: last1
-  lrutonia: 0.000001
-
-data:
-  read_pc: true
