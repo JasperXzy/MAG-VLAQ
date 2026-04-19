@@ -37,6 +37,42 @@ class DBVanilla2D(nn.Module):
             self.dbimage_pools = nn.ModuleList(self.dbimage_pools)
             self.dbimage_mlps = nn.ModuleList(self.dbimage_mlps)
 
+    @staticmethod
+    def _flatten_patch_tokens(feat_map):
+        return feat_map.flatten(2).transpose(1, 2).contiguous()
+
+    def forward_tokens(self, data_dict):
+        """Return unpooled database image tokens for each map type."""
+        db_map = data_dict['db_map']
+        if len(db_map.shape) == 5:
+            mode = 'cachetest'
+            b, nmap, c, h, w = db_map.shape
+            assert c == 3
+            db_map = db_map.unsqueeze(1)
+            ndb = 1
+        elif len(db_map.shape) == 6:
+            mode = 'train'
+            b, ndb, nmap, c, h, w = db_map.shape
+            assert c == 3
+        else:
+            raise NotImplementedError
+
+        db_map = db_map.permute(2, 0, 1, 3, 4, 5).contiguous()
+        tokens_per_maptype = []
+        for i in range(len(db_map)):
+            dbmap_i = db_map[i].view(-1, c, h, w)
+            image_fe = self.dbimage_fes[0] if self.args.share_dbfe == True else self.dbimage_fes[i]
+            feat_map, _ = image_fe(dbmap_i)
+            tokens_per_maptype.append(self._flatten_patch_tokens(feat_map))
+
+        return {
+            'db_tokens_per_maptype': tokens_per_maptype,
+            'aerial_tokens_per_maptype': tokens_per_maptype,
+            'batch_size': b,
+            'num_db': ndb,
+            'mode': mode,
+        }
+
     def forward_db(self, data_dict):
         db_map = data_dict['db_map'] 
         if len(db_map.shape) == 5: # [b,nmap,3,h,w]  for caching/testing

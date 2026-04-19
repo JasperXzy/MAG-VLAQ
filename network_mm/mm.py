@@ -37,7 +37,7 @@ class MM(nn.Module):
         self.vox_fe = UtoniaFE(out_channels=planes[-1], planes=planes, args=self.args)
         self.vox_pool = MinkGeM()
 
-        # DINOv2 returns one feature map; repeat it to match Utonia's multi-stage fusion inputs.
+        # DINOv2 layer outputs share the same channel dim; stage count follows Utonia planes.
         img_dims = [self.args.mm_imgfe_dim for _ in range(len(planes))]
 
         # Ensure img_dims are correctly passed to FuseBlockToShallow
@@ -69,6 +69,51 @@ class MM(nn.Module):
         self.stg2image_proj = MLP(self.args.mm_imgfe_dim, self.args.features_dim)
         self.stg2vox_proj = MLP(self.args.mm_voxfe_dim, self.args.features_dim)
 
+    @staticmethod
+    def _flatten_patch_tokens(feat_map):
+        return feat_map.flatten(2).transpose(1, 2).contiguous()
+
+    @staticmethod
+    def _build_utonia_dict(data_dict):
+        return {
+            'coord': data_dict['utonia_coord'],
+            'grid_coord': data_dict['utonia_grid_coord'],
+            'feat': data_dict['utonia_feat'],
+            'rgb': data_dict['utonia_rgb'],
+            'normal': data_dict['utonia_normal'],
+            'offset': data_dict['utonia_offset'],
+        }
+
+    def forward_tokens(self, data_dict):
+        """Return unpooled query-side tokens for later VLAQ consumption."""
+        image = data_dict['query_image']
+        if self.drop == 'image':
+            image = image * 0
+
+        _, imagefeatmaplist = self.image_fe(image)
+        assert len(imagefeatmaplist) == len(self.planes), (
+            f"dino_extract_blocks should output {len(self.planes)} layers, "
+            f"got {len(imagefeatmaplist)}"
+        )
+        image_tokens_per_layer = [
+            self._flatten_patch_tokens(feat_map) for feat_map in imagefeatmaplist
+        ]
+
+        _, voxfeatmaplist = self.vox_fe(self._build_utonia_dict(data_dict))
+        assert len(voxfeatmaplist) == len(self.planes), (
+            f"utonia_extract_stages should output {len(self.planes)} stages, "
+            f"got {len(voxfeatmaplist)}"
+        )
+        for stage_idx, sparse_stage in enumerate(voxfeatmaplist):
+            assert sparse_stage.F.shape[0] == sparse_stage.batch_indices.shape[0], (
+                f"vox stage {stage_idx} has mismatched features and batch indices"
+            )
+
+        return {
+            'image_tokens_per_layer': image_tokens_per_layer,
+            'vox_sparse_per_stage': voxfeatmaplist,
+        }
+
 
     # ====  query
     def forward_q(self, data_dict):
@@ -81,7 +126,10 @@ class MM(nn.Module):
         output = []
         if 'image' in self.args.output_type:
             imagefeatmap, imagefeatmaplist = self.image_fe(image)
-            imagefeatmaplist = [imagefeatmap for _ in range(len(self.planes))]
+            assert len(imagefeatmaplist) == len(self.planes), (
+                f"dino_extract_blocks should output {len(self.planes)} layers, "
+                f"got {len(imagefeatmaplist)}"
+            )
 
             imagefeatvec = self.image_pool(imagefeatmap)
             imagefeatvec = imagefeatvec.flatten(1)
@@ -91,15 +139,12 @@ class MM(nn.Module):
             imagefeatvec_org = imagefeatvec
             output.append(imagefeatvec * self.image_weight)
         if 'vox' in self.args.output_type:
-            utonia_dict = {
-                'coord': data_dict['utonia_coord'],
-                'grid_coord': data_dict['utonia_grid_coord'],
-                'feat': data_dict['utonia_feat'],
-                'rgb': data_dict['utonia_rgb'],
-                'normal': data_dict['utonia_normal'],
-                'offset': data_dict['utonia_offset'],
-            }
+            utonia_dict = self._build_utonia_dict(data_dict)
             voxfeatmap, voxfeatmaplist = self.vox_fe(utonia_dict)
+            assert len(voxfeatmaplist) == len(self.planes), (
+                f"utonia_extract_stages should output {len(self.planes)} stages, "
+                f"got {len(voxfeatmaplist)}"
+            )
             voxfeatvec = self.vox_pool(voxfeatmap)
             voxfeatvec = self.vox_proj(voxfeatvec)
             if self.args.output_l2 is True:

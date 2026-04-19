@@ -111,6 +111,8 @@ def parse_arguments():
     parser.add_argument('--shallow_learnweight', type=str, default=False)
     parser.add_argument('--diff_type', type=str, default='fcode@relu') # fcode@relu or fcode@sigmoid
     parser.add_argument('--diff_direction', type=str, default='backward') # forward  backward  
+    parser.add_argument('--fuse_summary_mode', type=str, default='mean',
+                        choices=['mean', 'max', 'attn', 'queries'])
     parser.add_argument('--odeint_method', type=str, default='euler')
     parser.add_argument('--odeint_size', type=float, default=0.1)
     parser.add_argument('--tol', type=float, default=1e-3)

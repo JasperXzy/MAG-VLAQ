@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from network_mm.diff_block import DiffBlock
-from layers.sparse_utils import sparse_global_avg_pool
+from layers.sparse_utils import sparse_global_avg_pool, sparse_global_max_pool
 
 class FuseBlockToShallow(nn.Module):
     def __init__(self, dims=[256,256,256], img_dims=[64,128,256], vox_dims=[64,128,256], bev_dims=[64,128,256], args=None):
@@ -33,6 +33,30 @@ class FuseBlockToShallow(nn.Module):
                 self.updimsvox.append(nn.Linear(self.vox_dims[i], dims[-1]))
             
         # self.cde = DiffBlock(dim=dims[-1], ode_dim=dims[-1])
+
+    def per_scale_summary(self, feat, modality, layer_idx):
+        mode = getattr(self.args, 'fuse_summary_mode', 'mean')
+        if modality == '2d':
+            if mode == 'mean':
+                return F.adaptive_avg_pool2d(feat, output_size=1).flatten(1)
+            if mode == 'max':
+                return F.adaptive_max_pool2d(feat, output_size=1).flatten(1)
+            if mode in {'attn', 'queries'}:
+                raise NotImplementedError(
+                    f"fuse_summary_mode='{mode}' for 2d is scheduled for a later phase"
+                )
+        elif modality == '3d':
+            if mode == 'mean':
+                return sparse_global_avg_pool(feat)
+            if mode == 'max':
+                return sparse_global_max_pool(feat)
+            if mode in {'attn', 'queries'}:
+                raise NotImplementedError(
+                    f"fuse_summary_mode='{mode}' for 3d is scheduled for a later phase"
+                )
+        else:
+            raise ValueError(f"Unknown summary modality: {modality}")
+        raise ValueError(f"Unknown fuse_summary_mode: {mode}")
 
     def forward_imgbev(self, imagemaplist, bevmaplist=None, voxmaplist=None):
         assert len(imagemaplist) == len(self.dims)
@@ -82,8 +106,8 @@ class FuseBlockToShallow(nn.Module):
     def forward_imgvox(self, imagemaplist, bevmaplist=None, voxmaplist=None):
         assert len(imagemaplist) == len(self.dims)
 
-        imageveclist = [F.adaptive_avg_pool2d(e, output_size=1).flatten(1) for e in imagemaplist] 
-        voxveclist = [sparse_global_avg_pool(e) for e in voxmaplist]
+        imageveclist = [self.per_scale_summary(e, '2d', i) for i, e in enumerate(imagemaplist)]
+        voxveclist = [self.per_scale_summary(e, '3d', i) for i, e in enumerate(voxmaplist)]
 
         if 'cde' in self.args.diff_type:
             # ==== cde
