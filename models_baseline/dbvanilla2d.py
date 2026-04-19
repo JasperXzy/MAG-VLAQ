@@ -3,6 +3,8 @@ import torch.nn as nn
 from typing import List
 from network.image_fe import ImageFE
 from network.image_pooling import GeM
+from network_mm.chart import Chart2D
+from network_mm.vlaq import is_vlaq_only
 import torch.nn.functional as F
 
 
@@ -29,6 +31,8 @@ class DBVanilla2D(nn.Module):
         # ---- database
         if mode == 'db':
             maptype = self.args.maptype.split('_')
+            self.vlaq_only = is_vlaq_only(self.args)
+            self.shared_vlaq = None
             self.dbimage_fes = [ImageFE(fe_type='dinov2_vitl14', args=self.args) for _ in range(len(maptype))]
             self.dbimage_pools = [GeM() for _ in range(len(maptype))]
             # self.dbimage_mlp = [nn.Linear(e.last_dim, dim) for e in self.dbimage_fes] # after pool, change dim
@@ -36,6 +40,16 @@ class DBVanilla2D(nn.Module):
             self.dbimage_fes = nn.ModuleList(self.dbimage_fes)
             self.dbimage_pools = nn.ModuleList(self.dbimage_pools)
             self.dbimage_mlps = nn.ModuleList(self.dbimage_mlps)
+            if self.vlaq_only:
+                for param in self.dbimage_pools.parameters():
+                    param.requires_grad = False
+                for param in self.dbimage_mlps.parameters():
+                    param.requires_grad = False
+                self.chart_a = nn.ModuleList(
+                    [Chart2D(self.args.mm_imgfe_dim, self.args.vlaq_token_dim) for _ in maptype]
+                )
+            else:
+                self.chart_a = None
 
     @staticmethod
     def _flatten_patch_tokens(feat_map):
@@ -88,6 +102,37 @@ class DBVanilla2D(nn.Module):
         else:
             raise NotImplementedError
         db_map = db_map.permute(2,0,1,3,4,5).contiguous() # [nmap,b,ndb,3,h,w]
+
+        if self.vlaq_only:
+            if self.shared_vlaq is None:
+                raise RuntimeError(
+                    "DBVanilla2D.shared_vlaq must be injected by SCAModule for final_type=vlaq_only"
+                )
+            out_dbvec = []
+            for i in range(len(db_map)):
+                dbmap_i = db_map[i].view(-1, c, h, w)
+                image_fe = self.dbimage_fes[0] if self.args.share_dbfe == True else self.dbimage_fes[i]
+                feat_map, _ = image_fe(dbmap_i)
+                tokens = self._flatten_patch_tokens(feat_map)
+                z_a = self.chart_a[i](tokens)
+                out_dbvec.append(self.shared_vlaq(z_a, q_bias=None))
+            out_dbvec = torch.stack(out_dbvec, dim=1)
+            out_dbvec = torch.mean(out_dbvec, dim=1).view(b, ndb, -1)
+            b, ndb, c = out_dbvec.shape
+            if mode == 'cachetest':
+                assert ndb == 1
+                out_dbvec = out_dbvec.view(b, c)
+            elif mode == 'train':
+                assert ndb > 1
+            else:
+                raise NotImplementedError
+
+            if self.args.final_l2 == True:
+                out_dbvec = F.normalize(out_dbvec, p=2, dim=-1)
+            return {
+                'embedding': out_dbvec,
+            }
+
         out_dbmap = []
         out_dbvec = []
         for i in range(len(db_map)):

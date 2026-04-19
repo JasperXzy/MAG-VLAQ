@@ -101,6 +101,13 @@ def parse_arguments():
     parser.add_argument('--final_type', type=str, default='imageorg_voxorg_shalloworg_stg2image_stg2vox') 
     parser.add_argument('--final_fusetype', type=str, default='add') # add  cat  catadd
     parser.add_argument('--final_l2', type=str, default=False)
+    parser.add_argument('--vlaq_n_queries', type=int, default=64)
+    parser.add_argument('--vlaq_query_dim', type=int, default=64)
+    parser.add_argument('--vlaq_token_dim', type=int, default=256)
+    parser.add_argument('--vlaq_dropout', type=float, default=0.0)
+    parser.add_argument('--vlaq_out_dim', type=int, default=256)
+    parser.add_argument('--vlaq_q_init', type=str, default='orthogonal',
+                        choices=['orthogonal', 'xavier', 'kmeans'])
     parser.add_argument('--image_embed', type=str, default='stg2image') # imageorg  stg2image
     parser.add_argument('--cloud_embed', type=str, default='stg2vox') # voxorg  stg2vox
     parser.add_argument('--image_weight', type=float, default=1)

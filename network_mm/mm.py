@@ -4,8 +4,10 @@ import torch.nn.functional as F
 
 from network_mm.image_fe import ImageFE
 from network_mm.image_pooling import GeM
+from network_mm.chart import Chart2D, Chart3D
 from network_mm.fuse_block_toshallow import FuseBlockToShallow
 from network_mm.stage2fuse_blockadd import Stage2FuseBlockAdd
+from network_mm.vlaq import concat_dense_sparse, is_vlaq_only
 
 from network_mm.utonia_fe import UtoniaFE
 from layers.pooling import MinkGeM
@@ -39,15 +41,28 @@ class MM(nn.Module):
 
         # DINOv2 layer outputs share the same channel dim; stage count follows Utonia planes.
         img_dims = [self.args.mm_imgfe_dim for _ in range(len(planes))]
+        self.vlaq_only = is_vlaq_only(self.args)
+        self.vlaq = None
+        if self.vlaq_only:
+            self.chart_img = Chart2D(self.args.mm_imgfe_dim, self.args.vlaq_token_dim)
+            self.chart_vox = Chart3D(planes[-1], self.args.vlaq_token_dim)
+        else:
+            self.chart_img = None
+            self.chart_vox = None
 
         # Ensure img_dims are correctly passed to FuseBlockToShallow
-        self.fuseblocktoshallow = FuseBlockToShallow(dims=[self.args.mm_stg2fuse_dim for _ in range(len(planes))],
-                                                     img_dims=img_dims,
-                                                     vox_dims=planes,
-                                                     bev_dims=[int(e) for e in self.args.mm_bevfe_planes.split('_')],
-                                                     args=self.args)
-        self.stg2fuseblock = Stage2FuseBlockAdd(fusedim=self.args.mm_stg2fuse_dim, imgdim=self.args.mm_imgfe_dim, bevdim=self.args.mm_bevfe_dim, voxdim=self.args.mm_voxfe_dim, args=self.args)
-        self.stg2fusefc = nn.Linear(self.args.mm_stg2fuse_dim, self.args.mm_stg2fuse_dim)
+        if self.vlaq_only:
+            self.fuseblocktoshallow = None
+            self.stg2fuseblock = None
+            self.stg2fusefc = None
+        else:
+            self.fuseblocktoshallow = FuseBlockToShallow(dims=[self.args.mm_stg2fuse_dim for _ in range(len(planes))],
+                                                         img_dims=img_dims,
+                                                         vox_dims=planes,
+                                                         bev_dims=[int(e) for e in self.args.mm_bevfe_planes.split('_')],
+                                                         args=self.args)
+            self.stg2fuseblock = Stage2FuseBlockAdd(fusedim=self.args.mm_stg2fuse_dim, imgdim=self.args.mm_imgfe_dim, bevdim=self.args.mm_bevfe_dim, voxdim=self.args.mm_voxfe_dim, args=self.args)
+            self.stg2fusefc = nn.Linear(self.args.mm_stg2fuse_dim, self.args.mm_stg2fuse_dim)
 
 
         self.image_weight = nn.Parameter(torch.tensor(self.args.image_weight, dtype=torch.float32), requires_grad=self.args.image_learnweight)
@@ -62,12 +77,29 @@ class MM(nn.Module):
         self.stg2image_weight = nn.Parameter(torch.tensor(self.args.stg2imagevox_weight, dtype=torch.float32), requires_grad=self.args.stg2imagevox_learnweight)
         self.stg2vox_weight = nn.Parameter(torch.tensor(self.args.stg2imagevox_weight, dtype=torch.float32), requires_grad=self.args.stg2imagevox_learnweight)
         self.stg2fuse_weight = nn.Parameter(torch.tensor(self.args.stg2fuse_weight, dtype=torch.float32), requires_grad=self.args.stg2fuse_learnweight)
+        if self.vlaq_only:
+            for param in (
+                self.image_weight,
+                self.vox_weight,
+                self.shallow_weight,
+                self.imageorg_weight,
+                self.voxorg_weight,
+                self.shalloworg_weight,
+                self.stg2image_weight,
+                self.stg2vox_weight,
+                self.stg2fuse_weight,
+            ):
+                param.requires_grad_(False)
 
         self.image_proj = MLP(self.args.mm_imgfe_dim, self.args.features_dim)
 
         self.vox_proj = MLP(planes[-1], self.args.features_dim)
-        self.stg2image_proj = MLP(self.args.mm_imgfe_dim, self.args.features_dim)
-        self.stg2vox_proj = MLP(self.args.mm_voxfe_dim, self.args.features_dim)
+        if self.vlaq_only:
+            self.stg2image_proj = None
+            self.stg2vox_proj = None
+        else:
+            self.stg2image_proj = MLP(self.args.mm_imgfe_dim, self.args.features_dim)
+            self.stg2vox_proj = MLP(self.args.mm_voxfe_dim, self.args.features_dim)
 
     @staticmethod
     def _flatten_patch_tokens(feat_map):
@@ -152,6 +184,30 @@ class MM(nn.Module):
             voxfeatvec_org = voxfeatvec
             output.append(voxfeatvec * self.vox_weight)
             a=1
+
+        if self.vlaq_only:
+            if self.vlaq is None:
+                raise RuntimeError("MM.vlaq must be injected by SCAModule for final_type=vlaq_only")
+            if 'image' not in self.args.output_type or 'vox' not in self.args.output_type:
+                raise ValueError("final_type=vlaq_only requires output_type to include image and vox")
+
+            img_tokens_last = self._flatten_patch_tokens(imagefeatmap)
+            z_img = self.chart_img(img_tokens_last)
+            z_vox = self.chart_vox(voxfeatmap)
+            z_ground = concat_dense_sparse(z_img, z_vox)
+            x = self.vlaq(z_ground, q_bias=None)
+            if self.args.final_l2 is True:
+                x = F.normalize(x, dim=-1)
+
+            return {
+                'imagevec_org': imagefeatvec_org,
+                'voxvec_org': voxfeatvec_org,
+                'shallowvec_org': None,
+                'stg2fusevec': None,
+                'stg2imagevec': None,
+                'stg2voxvec': None,
+                'embedding': x,
+            }
 
             
         # ==== stage-1 fusion, ME

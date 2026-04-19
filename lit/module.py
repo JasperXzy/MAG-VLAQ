@@ -12,6 +12,7 @@ except ImportError as exc:  # pragma: no cover - depends on environment
 from compute_other_loss import compute_other_loss
 from models_baseline.dbvanilla2d import DBVanilla2D
 from network_mm.mm import MM
+from network_mm.vlaq import VLAQ, is_vlaq_only
 
 
 def _trainable(parameters: Iterable[torch.nn.Parameter]) -> List[torch.nn.Parameter]:
@@ -25,9 +26,15 @@ def _add_group(groups: List[dict], params: Iterable[torch.nn.Parameter], lr: flo
 
 
 def build_param_groups(model: nn.Module, modelq: nn.Module, args) -> Tuple[List[dict], List[dict]]:
+    vlaq_only = is_vlaq_only(args)
     params_db: List[dict] = []
     if isinstance(model, DBVanilla2D):
-        if getattr(args, "lrdino", 0.0) > 0.0:
+        if vlaq_only:
+            if getattr(args, "lrdino", 0.0) > 0.0:
+                _add_group(params_db, _trainable(model.dbimage_fes.parameters()), args.lrdino)
+            if getattr(model, "chart_a", None) is not None:
+                _add_group(params_db, _trainable(model.chart_a.parameters()), args.lrdb)
+        elif getattr(args, "lrdino", 0.0) > 0.0:
             dino_params = list(model.dbimage_fes.parameters())
             base_params = [
                 p for name, p in model.named_parameters()
@@ -61,28 +68,41 @@ def build_param_groups(model: nn.Module, modelq: nn.Module, args) -> Tuple[List[
         ]
         _add_group(params_q, other_vox, args.lrpc)
         _add_group(params_q, _trainable(modelq.vox_pool.parameters()), args.lrpc)
-        _add_group(params_q, _trainable(modelq.fuseblocktoshallow.parameters()), args.lr)
-        _add_group(params_q, _trainable(modelq.stg2fuseblock.parameters()), args.lr)
-        _add_group(params_q, _trainable(modelq.stg2fusefc.parameters()), args.lr)
+        if getattr(modelq, "fuseblocktoshallow", None) is not None:
+            _add_group(params_q, _trainable(modelq.fuseblocktoshallow.parameters()), args.lr)
+        if getattr(modelq, "stg2fuseblock", None) is not None:
+            _add_group(params_q, _trainable(modelq.stg2fuseblock.parameters()), args.lr)
+        if getattr(modelq, "stg2fusefc", None) is not None:
+            _add_group(params_q, _trainable(modelq.stg2fusefc.parameters()), args.lr)
 
         _add_group(params_q, _trainable(modelq.image_proj.parameters()), args.lr)
         _add_group(params_q, _trainable(modelq.vox_proj.parameters()), args.lrpc)
-        _add_group(params_q, _trainable(modelq.stg2image_proj.parameters()), args.lr)
-        _add_group(params_q, _trainable(modelq.stg2vox_proj.parameters()), args.lrpc)
+        if getattr(modelq, "stg2image_proj", None) is not None:
+            _add_group(params_q, _trainable(modelq.stg2image_proj.parameters()), args.lr)
+        if getattr(modelq, "stg2vox_proj", None) is not None:
+            _add_group(params_q, _trainable(modelq.stg2vox_proj.parameters()), args.lrpc)
 
-        scalar_groups = [
-            (modelq.image_weight, args.lr),
-            (modelq.vox_weight, args.lrpc),
-            (modelq.shallow_weight, args.lr),
-            (modelq.imageorg_weight, args.lr),
-            (modelq.voxorg_weight, args.lr),
-            (modelq.shalloworg_weight, args.lr),
-            (modelq.stg2image_weight, args.lr),
-            (modelq.stg2vox_weight, args.lr),
-            (modelq.stg2fuse_weight, args.lr),
-        ]
-        for param, lr in scalar_groups:
-            _add_group(params_q, [param], lr)
+        if vlaq_only:
+            if getattr(modelq, "chart_img", None) is not None:
+                _add_group(params_q, _trainable(modelq.chart_img.parameters()), args.lr)
+            if getattr(modelq, "chart_vox", None) is not None:
+                _add_group(params_q, _trainable(modelq.chart_vox.parameters()), args.lrpc)
+            if getattr(modelq, "vlaq", None) is not None:
+                _add_group(params_q, _trainable(modelq.vlaq.parameters()), args.lr)
+        else:
+            scalar_groups = [
+                (modelq.image_weight, args.lr),
+                (modelq.vox_weight, args.lrpc),
+                (modelq.shallow_weight, args.lr),
+                (modelq.imageorg_weight, args.lr),
+                (modelq.voxorg_weight, args.lr),
+                (modelq.shalloworg_weight, args.lr),
+                (modelq.stg2image_weight, args.lr),
+                (modelq.stg2vox_weight, args.lr),
+                (modelq.stg2fuse_weight, args.lr),
+            ]
+            for param, lr in scalar_groups:
+                _add_group(params_q, [param], lr)
 
     if not params_db:
         raise RuntimeError("No trainable parameters found for the database model.")
@@ -116,10 +136,36 @@ class SCAModule(pl.LightningModule):
         self.save_hyperparameters(vars(args))
         self.model = DBVanilla2D(mode="db", dim=args.features_dim, args=args)
         self.modelq = MM(args=args)
+        self.shared_vlaq = None
+        if is_vlaq_only(args):
+            self._init_shared_vlaq()
         self.criterion_triplet = nn.TripletMarginLoss(
             margin=args.margin, p=2, reduction="sum"
         )
         self.automatic_optimization = False
+
+    def _init_shared_vlaq(self):
+        vlaq_out_dim = self.args.vlaq_out_dim
+        embedding_dim = (
+            self.args.vlaq_n_queries * self.args.vlaq_query_dim
+            if vlaq_out_dim is None else vlaq_out_dim
+        )
+        if embedding_dim != self.args.features_dim:
+            raise ValueError(
+                "VLAQ embedding dim must match features_dim for triplet cache: "
+                f"got vlaq={embedding_dim}, features_dim={self.args.features_dim}"
+            )
+        self.shared_vlaq = VLAQ(
+            n_queries=self.args.vlaq_n_queries,
+            query_dim=self.args.vlaq_query_dim,
+            token_dim=self.args.vlaq_token_dim,
+            out_dim=vlaq_out_dim,
+            dropout=self.args.vlaq_dropout,
+            q_init=self.args.vlaq_q_init,
+        )
+        self.modelq.vlaq = self.shared_vlaq
+        self.model.shared_vlaq = self.shared_vlaq
+        assert id(self.modelq.vlaq.q_k) == id(self.model.shared_vlaq.q_k)
 
     def forward(self, data_dict):
         feats_ground = self.modelq(data_dict, mode="q")
