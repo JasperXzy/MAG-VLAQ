@@ -90,7 +90,11 @@ def build_param_groups(model: nn.Module, modelq: nn.Module, args) -> Tuple[List[
             elif getattr(modelq, "chart_vox", None) is not None:
                 _add_group(params_q, _trainable(modelq.chart_vox.parameters()), args.lrpc)
             if getattr(modelq, "delta_q", None) is not None:
-                _add_group(params_q, _trainable(modelq.delta_q.parameters()), args.lr)
+                _add_group(
+                    params_q,
+                    _trainable(modelq.delta_q.parameters()),
+                    args.lr if getattr(args, "lrodecq", None) is None else args.lrodecq,
+                )
             if getattr(modelq, "vlaq", None) is not None:
                 _add_group(params_q, _trainable(modelq.vlaq.parameters()), args.lr)
         else:
@@ -159,14 +163,22 @@ class SCAModule(pl.LightningModule):
                 "VLAQ embedding dim must match features_dim for triplet cache: "
                 f"got vlaq={embedding_dim}, features_dim={self.args.features_dim}"
             )
-        self.shared_vlaq = VLAQ(
-            n_queries=self.args.vlaq_n_queries,
-            query_dim=self.args.vlaq_query_dim,
-            token_dim=self.args.vlaq_token_dim,
-            out_dim=vlaq_out_dim,
-            dropout=self.args.vlaq_dropout,
-            q_init=self.args.vlaq_q_init,
-        )
+        vlaq_init_seed = getattr(self.args, "vlaq_init_seed", None)
+        if vlaq_init_seed is None:
+            vlaq_init_seed = int(getattr(self.args, "seed", 0)) + 1009
+        rng_state = torch.random.get_rng_state()
+        try:
+            torch.manual_seed(int(vlaq_init_seed))
+            self.shared_vlaq = VLAQ(
+                n_queries=self.args.vlaq_n_queries,
+                query_dim=self.args.vlaq_query_dim,
+                token_dim=self.args.vlaq_token_dim,
+                out_dim=vlaq_out_dim,
+                dropout=self.args.vlaq_dropout,
+                q_init=self.args.vlaq_q_init,
+            )
+        finally:
+            torch.random.set_rng_state(rng_state)
         self.modelq.vlaq = self.shared_vlaq
         self.model.shared_vlaq = self.shared_vlaq
         assert id(self.modelq.vlaq.q_k) == id(self.model.shared_vlaq.q_k)
@@ -208,12 +220,22 @@ class SCAModule(pl.LightningModule):
         opt_db.step()
         opt_q.step()
 
+        log_values = {
+            "train/loss": loss.detach(),
+            "train/triplet": triplet_loss.detach(),
+            "train/other": other_loss.detach(),
+        }
+        ode_cq_stats = getattr(self.modelq, "ode_cq_stats", None)
+        if ode_cq_stats:
+            log_values.update(
+                {
+                    f"delta_q/{key}": value.detach()
+                    for key, value in ode_cq_stats.items()
+                }
+            )
+
         self.log_dict(
-            {
-                "train/loss": loss.detach(),
-                "train/triplet": triplet_loss.detach(),
-                "train/other": other_loss.detach(),
-            },
+            log_values,
             prog_bar=True,
             on_step=True,
             on_epoch=True,

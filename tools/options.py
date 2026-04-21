@@ -66,6 +66,7 @@ def parse_arguments():
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--lrpc", type=float, default=1e-4)
     parser.add_argument("--lrdb", type=float, default=1e-5)
+    parser.add_argument("--lrodecq", type=float, default=None)
     parser.add_argument("--lrdino", type=float, default=0.0)
     parser.add_argument("--unfreeze_dino_mode", type=str, default="frozen", choices=["frozen", "last2", "full"])
     parser.add_argument("--dino_extract_blocks", type=str, default="7_15_23", help="Transformer block indices to extract multi-layer features from DINOv2")
@@ -111,8 +112,11 @@ def parse_arguments():
     parser.add_argument('--use_ode_cq', type=str, default=False,
                         help="Enable ODE-conditioned query bias for ground-side VLAQ.")
     parser.add_argument('--ode_cq_rank', type=int, default=64)
-    parser.add_argument('--ode_cq_alpha_init', type=float, default=0.0)
-    parser.add_argument('--ode_cq_alpha_learn', type=str, default=True)
+    parser.add_argument('--ode_cq_alpha_init', type=float, default=1.0)
+    parser.add_argument('--ode_cq_alpha_learn', type=str, default=False)
+    parser.add_argument('--ode_cq_bias_scale', type=float, default=1.0)
+    parser.add_argument('--ode_cq_max_ratio', type=float, default=0.0)
+    parser.add_argument('--vlaq_init_seed', type=int, default=None)
     parser.add_argument('--image_embed', type=str, default='stg2image') # imageorg  stg2image
     parser.add_argument('--cloud_embed', type=str, default='stg2vox') # voxorg  stg2vox
     parser.add_argument('--image_weight', type=float, default=1)

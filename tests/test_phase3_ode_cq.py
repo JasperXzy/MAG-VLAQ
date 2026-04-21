@@ -1,25 +1,29 @@
 import torch
+import torch.nn as nn
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from network_mm.fuse_block_toshallow import FuseBlockToShallow
+from network_mm.mm import MM
 from network_mm.ode_cq import DeltaQ
 from network_mm.vlaq import VLAQ
 
 
-def test_delta_q_alpha_zero_outputs_zero_but_keeps_alpha_gradient():
+def test_delta_q_zero_up_outputs_zero_but_trains_up_projection():
     torch.manual_seed(0)
-    delta_q = DeltaQ(C=8, S=4, D=6, r=3, alpha_init=0.0, alpha_learn=True)
+    delta_q = DeltaQ(C=8, S=4, D=6, r=3, alpha_init=1.0, alpha_learn=False)
     e_fuse = torch.randn(2, 8)
     q_bias = delta_q(e_fuse)
 
     assert q_bias.shape == (2, 4, 6)
     assert torch.allclose(q_bias, torch.zeros_like(q_bias))
+    assert torch.allclose(delta_q.w_up_q.weight, torch.zeros_like(delta_q.w_up_q.weight))
 
     target = torch.randn_like(q_bias)
     loss = (q_bias * target).sum()
     loss.backward()
-    assert delta_q.alpha.grad is not None
-    assert delta_q.alpha.grad.abs() > 0
+    assert delta_q.w_up_q.weight.grad is not None
+    assert delta_q.w_up_q.weight.grad.abs().sum() > 0
 
 
 def test_vlaq_zero_q_bias_matches_static_queries():
@@ -50,3 +54,68 @@ def test_fuse_summary_accepts_charted_2d_tokens():
 
     assert summary.shape == (2, 4)
     assert torch.allclose(summary, tokens.mean(dim=1))
+
+
+class _DummyImageFE(nn.Module):
+    last_dim = 1024
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+
+class _DummyUtoniaFE(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.ptv3 = nn.Linear(1, 1)
+        self.projs = nn.ModuleList([nn.Linear(1, 1)])
+
+
+def _mm_args(use_ode_cq=True):
+    return SimpleNamespace(
+        mm_imgfe_dim=1024,
+        mm_voxfe_planes="64_128_256",
+        mm_bevfe_planes="64_128_256",
+        mm_stg2fuse_dim=512,
+        mm_bevfe_dim=256,
+        mm_voxfe_dim=256,
+        vlaq_token_dim=256,
+        vlaq_n_queries=64,
+        vlaq_query_dim=64,
+        ode_cq_rank=16,
+        ode_cq_alpha_init=0.0,
+        ode_cq_alpha_learn=False,
+        ode_cq_bias_scale=1.0,
+        ode_cq_max_ratio=0.0,
+        use_ode_cq=use_ode_cq,
+        final_type="vlaq_only",
+        output_type=["image", "vox", "shallow"],
+        features_dim=512,
+        image_weight=1.0,
+        image_learnweight=False,
+        vox_weight=1.0,
+        vox_learnweight=False,
+        shallow_weight=1.0,
+        shallow_learnweight=False,
+        imagevoxorg_weight=0.0,
+        imagevoxorg_learnweight=False,
+        shalloworg_weight=1.0,
+        shalloworg_learnweight=False,
+        stg2imagevox_weight=0.1,
+        stg2imagevox_learnweight=False,
+        stg2fuse_weight=0.0,
+        stg2fuse_learnweight=False,
+        diff_type="fcode@relu",
+        diff_direction="backward",
+        odeint_method="euler",
+        odeint_size=0.1,
+        tol=1e-3,
+    )
+
+
+def test_ode_cq_reuses_static_last_voxel_chart():
+    with patch("network_mm.mm.ImageFE", _DummyImageFE), patch(
+        "network_mm.mm.UtoniaFE", _DummyUtoniaFE
+    ):
+        model = MM(args=_mm_args(use_ode_cq=True))
+
+    assert model.chart_vox_l[-1] is model.chart_vox

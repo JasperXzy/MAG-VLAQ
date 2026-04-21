@@ -38,7 +38,7 @@ class DeltaQ(nn.Module):
     def reset_parameters(self):
         nn.init.xavier_uniform_(self.w_down.weight)
         nn.init.zeros_(self.w_down.bias)
-        nn.init.xavier_uniform_(self.w_up_q.weight)
+        nn.init.zeros_(self.w_up_q.weight)
         nn.init.zeros_(self.w_up_q.bias)
 
     def forward(self, e_fuse):

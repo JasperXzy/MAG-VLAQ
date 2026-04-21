@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - older Lightning versions
 
 
 LIGHTNING_COMMANDS = {"fit", "train", "validate", "test", "predict"}
-RESERVED_CONFIG_KEYS = {"trainer", "model", "data", "logging", "ckpt_path"}
+RESERVED_CONFIG_KEYS = {"trainer", "model", "data", "logging", "checkpoint", "ckpt_path"}
 STORE_TRUE_FLAGS = {"horizontal_flip", "efficient_ram_testing"}
 
 
@@ -409,14 +409,23 @@ class SCALightningCLI(_BaseLightningCLI):
         datamodule_cls = _import_symbol(datamodule_class)
         from lit.callbacks import RetrievalEvalCallback, TripletCacheRefreshCallback
 
-        checkpoint_cb = pl.callbacks.ModelCheckpoint(
-            monitor="val/R_sum",
-            mode="max",
-            save_top_k=3,
-            save_last=True,
-            filename="epoch{epoch:03d}-r1{val/R@1:.2f}-rsum{val/R_sum:.2f}",
-            auto_insert_metric_name=False,
-        )
+        checkpoint_config = config.get("checkpoint", {}) or {}
+        checkpoint_cb = None
+        if checkpoint_config.get("enabled", True):
+            checkpoint_cb = pl.callbacks.ModelCheckpoint(
+                monitor=checkpoint_config.get("monitor", "val/R_sum"),
+                mode=checkpoint_config.get("mode", "max"),
+                save_top_k=checkpoint_config.get("save_top_k", 3),
+                save_last=checkpoint_config.get("save_last", True),
+                save_weights_only=checkpoint_config.get("save_weights_only", False),
+                filename=checkpoint_config.get(
+                    "filename",
+                    "epoch{epoch:03d}-r1{val/R@1:.2f}-rsum{val/R_sum:.2f}",
+                ),
+                auto_insert_metric_name=checkpoint_config.get(
+                    "auto_insert_metric_name", False
+                ),
+            )
         callbacks = trainer_config.pop("callbacks", None) or []
         has_progress_bar = any(
             type(callback).__name__.endswith("ProgressBar") for callback in callbacks
@@ -426,12 +435,9 @@ class SCALightningCLI(_BaseLightningCLI):
             callbacks.append(
                 pl.callbacks.RichProgressBar(leave=True, console_kwargs={"stderr": True})
             )
-        callbacks.extend(
-            [
-                RetrievalEvalCallback(loops_num=loops_num),
-                checkpoint_cb,
-            ]
-        )
+        callbacks.append(RetrievalEvalCallback(loops_num=loops_num))
+        if checkpoint_cb is not None:
+            callbacks.append(checkpoint_cb)
         trainer_config["callbacks"] = callbacks
         trainer_config.setdefault("logger", logger_config)
 

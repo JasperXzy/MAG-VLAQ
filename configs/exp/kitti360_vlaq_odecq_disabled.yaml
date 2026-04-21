@@ -31,13 +31,7 @@ model:
   vlaq_out_dim: 512
   vlaq_dropout: 0.0
   vlaq_q_init: orthogonal
-  use_ode_cq: true
-  ode_cq_rank: 64
-  ode_cq_alpha_init: 1.0
-  ode_cq_alpha_learn: false
-  ode_cq_bias_scale: 0.1
-  ode_cq_max_ratio: 0.2
-  lrodecq: 0.000001
+  use_ode_cq: false
   fuse_summary_mode: mean
 
 data:
@@ -50,7 +44,7 @@ data:
 logging:
   litlogger:
     enabled: true
-    name: kitti360_baseline_vlaq_odecq
+    name: kitti360_vlaq_odecq_disabled
     root_dir: logs
     save_logs: true
     metadata:
@@ -58,8 +52,7 @@ logging:
       dino_blocks: "7,15,23"
       utonia_stages: "0,2,4"
       fusion_dim: "512"
-      ode_cq_rank: "64"
-      note: "phase3 stable ODE-CQ: zero-up DeltaQ, alpha fixed, qbias ratio clamp"
+      note: "phase3 control: ODE-CQ disabled, static VLAQ path"
       repository_name: MAG-VLAQ
       repository_branch: main
       repository_commit_hash: cb70d2b79

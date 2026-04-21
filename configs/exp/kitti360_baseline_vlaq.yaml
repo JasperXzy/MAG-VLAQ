@@ -1,6 +1,9 @@
 trainer:
   precision: bf16-mixed
 
+checkpoint:
+  save_weights_only: true
+
 model:
   output_type: image_vox_shallow
   final_type: vlaq_only

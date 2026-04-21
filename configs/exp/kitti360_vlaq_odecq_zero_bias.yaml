@@ -33,10 +33,10 @@ model:
   vlaq_q_init: orthogonal
   use_ode_cq: true
   ode_cq_rank: 64
-  ode_cq_alpha_init: 1.0
+  ode_cq_alpha_init: 0.0
   ode_cq_alpha_learn: false
-  ode_cq_bias_scale: 0.1
-  ode_cq_max_ratio: 0.2
+  ode_cq_bias_scale: 1.0
+  ode_cq_max_ratio: 0.0
   lrodecq: 0.000001
   fuse_summary_mode: mean
 
@@ -50,7 +50,7 @@ data:
 logging:
   litlogger:
     enabled: true
-    name: kitti360_baseline_vlaq_odecq
+    name: kitti360_vlaq_odecq_zero_bias
     root_dir: logs
     save_logs: true
     metadata:
@@ -59,7 +59,7 @@ logging:
       utonia_stages: "0,2,4"
       fusion_dim: "512"
       ode_cq_rank: "64"
-      note: "phase3 stable ODE-CQ: zero-up DeltaQ, alpha fixed, qbias ratio clamp"
+      note: "phase3 equivalence check: ODE-CQ path with q_bias fixed to zero"
       repository_name: MAG-VLAQ
       repository_branch: main
       repository_commit_hash: cb70d2b79

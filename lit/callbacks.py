@@ -392,7 +392,12 @@ class RetrievalEvalCallback(pl.Callback):
             "val/R@10": current[2],
             "val/R_sum": sum(current),
         }
-        pl_module.log_dict(metrics, prog_bar=True, rank_zero_only=False)
+        pl_module.log_dict(
+            metrics,
+            prog_bar=True,
+            rank_zero_only=False,
+            sync_dist=trainer.world_size > 1,
+        )
 
         now = (
             f"Now : R@1 = {current[0]:.1f}   R@5 = {current[1]:.1f}   "

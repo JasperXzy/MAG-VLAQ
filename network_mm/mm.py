@@ -55,13 +55,13 @@ class MM(nn.Module):
         self.vlaq = None
         if self.vlaq_only:
             self.chart_img = Chart2D(self.args.mm_imgfe_dim, self.args.vlaq_token_dim)
+            self.chart_vox = Chart3D(planes[-1], self.args.vlaq_token_dim)
             if self.use_ode_cq:
-                self.chart_vox = None
                 self.chart_vox_l = nn.ModuleList(
-                    [Chart3D(plane, self.args.vlaq_token_dim) for plane in planes]
+                    [Chart3D(plane, self.args.vlaq_token_dim) for plane in planes[:-1]]
+                    + [self.chart_vox]
                 )
             else:
-                self.chart_vox = Chart3D(planes[-1], self.args.vlaq_token_dim)
                 self.chart_vox_l = None
         else:
             self.chart_img = None
@@ -135,6 +135,7 @@ class MM(nn.Module):
         if self.vlaq_only:
             self.stg2image_proj = None
             self.stg2vox_proj = None
+            self.ode_cq_stats = {}
         else:
             self.stg2image_proj = MLP(self.args.mm_imgfe_dim, self.args.features_dim)
             self.stg2vox_proj = MLP(self.args.mm_voxfe_dim, self.args.features_dim)
@@ -174,8 +175,34 @@ class MM(nn.Module):
             for i in range(len(self.planes))
         ]
         e_fuse = self.fuseblocktoshallow.forward_state(fusedveclist)
-        q_bias = self.delta_q(e_fuse)
+        q_bias = self._stabilize_q_bias(self.delta_q(e_fuse))
         return z_img_list[-1], z_vox_list[-1], q_bias
+
+    def _stabilize_q_bias(self, q_bias):
+        bias_scale = float(getattr(self.args, 'ode_cq_bias_scale', 1.0))
+        if bias_scale != 1.0:
+            q_bias = q_bias * bias_scale
+
+        if self.vlaq is None:
+            return q_bias
+
+        qk_norm = self.vlaq.q_k.detach().float().flatten().norm().clamp_min(1e-12)
+        qbias_norm = q_bias.detach().float().flatten(1).norm(dim=1)
+        max_ratio = float(getattr(self.args, 'ode_cq_max_ratio', 0.0) or 0.0)
+        if max_ratio > 0.0:
+            max_norm = qk_norm * max_ratio
+            clamp_scale = (max_norm / qbias_norm.clamp_min(1e-12)).clamp(max=1.0)
+            q_bias = q_bias * clamp_scale.to(device=q_bias.device, dtype=q_bias.dtype).view(-1, 1, 1)
+            qbias_norm = q_bias.detach().float().flatten(1).norm(dim=1)
+
+        alpha = getattr(self.delta_q, 'alpha', q_bias.new_tensor(0.0))
+        self.ode_cq_stats = {
+            'alpha': alpha.detach().float().mean(),
+            'q_bias_norm': qbias_norm.mean(),
+            'qk_norm': qk_norm,
+            'qbias_to_qk_ratio': (qbias_norm / qk_norm).mean(),
+        }
+        return q_bias
 
     def forward_tokens(self, data_dict):
         """Return unpooled query-side tokens for later VLAQ consumption."""
