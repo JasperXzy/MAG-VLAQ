@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,6 +35,16 @@ def _as_bool(value):
         return value.lower() in {'1', 'true', 'yes', 'y'}
     return bool(value)
 
+
+@contextmanager
+def _preserve_rng_state():
+    rng_state = torch.random.get_rng_state()
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(rng_state)
+
+
 class MM(nn.Module):
     def __init__(self, drop=None, args=None):
         super().__init__()
@@ -57,43 +69,42 @@ class MM(nn.Module):
             self.chart_img = Chart2D(self.args.mm_imgfe_dim, self.args.vlaq_token_dim)
             self.chart_vox = Chart3D(planes[-1], self.args.vlaq_token_dim)
             if self.use_ode_cq:
-                self.chart_vox_l = nn.ModuleList(
-                    [Chart3D(plane, self.args.vlaq_token_dim) for plane in planes[:-1]]
-                    + [self.chart_vox]
-                )
+                with _preserve_rng_state():
+                    self.chart_vox_l = nn.ModuleList(
+                        [Chart3D(plane, self.args.vlaq_token_dim) for plane in planes[:-1]]
+                        + [self.chart_vox]
+                    )
+                    token_dims = [self.args.vlaq_token_dim for _ in range(len(planes))]
+                    self.fuseblocktoshallow = FuseBlockToShallow(
+                        dims=token_dims,
+                        img_dims=token_dims,
+                        vox_dims=token_dims,
+                        bev_dims=[int(e) for e in self.args.mm_bevfe_planes.split('_')],
+                        args=self.args,
+                    )
+                    self.delta_q = DeltaQ(
+                        C=self.args.vlaq_token_dim,
+                        S=self.args.vlaq_n_queries,
+                        D=self.args.vlaq_query_dim,
+                        r=self.args.ode_cq_rank,
+                        alpha_init=self.args.ode_cq_alpha_init,
+                        alpha_learn=_as_bool(self.args.ode_cq_alpha_learn),
+                    )
             else:
                 self.chart_vox_l = None
+                self.fuseblocktoshallow = None
+                self.delta_q = None
         else:
             self.chart_img = None
             self.chart_vox = None
             self.chart_vox_l = None
+            self.delta_q = None
 
         # Ensure img_dims are correctly passed to FuseBlockToShallow
         if self.vlaq_only:
-            if self.use_ode_cq:
-                token_dims = [self.args.vlaq_token_dim for _ in range(len(planes))]
-                self.fuseblocktoshallow = FuseBlockToShallow(
-                    dims=token_dims,
-                    img_dims=token_dims,
-                    vox_dims=token_dims,
-                    bev_dims=[int(e) for e in self.args.mm_bevfe_planes.split('_')],
-                    args=self.args,
-                )
-                self.delta_q = DeltaQ(
-                    C=self.args.vlaq_token_dim,
-                    S=self.args.vlaq_n_queries,
-                    D=self.args.vlaq_query_dim,
-                    r=self.args.ode_cq_rank,
-                    alpha_init=self.args.ode_cq_alpha_init,
-                    alpha_learn=_as_bool(self.args.ode_cq_alpha_learn),
-                )
-            else:
-                self.fuseblocktoshallow = None
-                self.delta_q = None
             self.stg2fuseblock = None
             self.stg2fusefc = None
         else:
-            self.delta_q = None
             self.fuseblocktoshallow = FuseBlockToShallow(dims=[self.args.mm_stg2fuse_dim for _ in range(len(planes))],
                                                          img_dims=img_dims,
                                                          vox_dims=planes,

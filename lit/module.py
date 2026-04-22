@@ -163,13 +163,9 @@ class SCAModule(pl.LightningModule):
                 "VLAQ embedding dim must match features_dim for triplet cache: "
                 f"got vlaq={embedding_dim}, features_dim={self.args.features_dim}"
             )
-        vlaq_init_seed = getattr(self.args, "vlaq_init_seed", None)
-        if vlaq_init_seed is None:
-            vlaq_init_seed = int(getattr(self.args, "seed", 0)) + 1009
-        rng_state = torch.random.get_rng_state()
-        try:
-            torch.manual_seed(int(vlaq_init_seed))
-            self.shared_vlaq = VLAQ(
+
+        def make_vlaq():
+            return VLAQ(
                 n_queries=self.args.vlaq_n_queries,
                 query_dim=self.args.vlaq_query_dim,
                 token_dim=self.args.vlaq_token_dim,
@@ -177,8 +173,17 @@ class SCAModule(pl.LightningModule):
                 dropout=self.args.vlaq_dropout,
                 q_init=self.args.vlaq_q_init,
             )
-        finally:
-            torch.random.set_rng_state(rng_state)
+
+        vlaq_init_seed = getattr(self.args, "vlaq_init_seed", None)
+        if vlaq_init_seed is None:
+            self.shared_vlaq = make_vlaq()
+        else:
+            rng_state = torch.random.get_rng_state()
+            try:
+                torch.manual_seed(int(vlaq_init_seed))
+                self.shared_vlaq = make_vlaq()
+            finally:
+                torch.random.set_rng_state(rng_state)
         self.modelq.vlaq = self.shared_vlaq
         self.model.shared_vlaq = self.shared_vlaq
         assert id(self.modelq.vlaq.q_k) == id(self.model.shared_vlaq.q_k)
