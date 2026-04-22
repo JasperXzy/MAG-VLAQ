@@ -47,7 +47,15 @@ class DeltaQ(nn.Module):
         if e_fuse.shape[-1] != self.C:
             raise ValueError(f"e_fuse channel dim must be {self.C}, got {e_fuse.shape[-1]}")
 
-        h = F.gelu(self.w_down(self.norm(e_fuse)))
-        q_bias = self.w_up_q(h).view(e_fuse.shape[0], self.S, self.D)
-        alpha = self.alpha.to(device=q_bias.device, dtype=q_bias.dtype)
-        return alpha * q_bias
+        # Run DeltaQ in fp32 regardless of outer autocast: under bf16-mixed the
+        # upstream FCODE stack can push e_fuse into Inf, and `w_up_q.weight==0`
+        # matmul then yields `sum(0 * Inf) = NaN` which poisons q_k via q_eff.
+        orig_dtype = e_fuse.dtype
+        with torch.amp.autocast(device_type=e_fuse.device.type, enabled=False):
+            e_fuse_f = e_fuse.float()
+            h = F.gelu(self.w_down(self.norm(e_fuse_f)))
+            q_bias = self.w_up_q(h).view(e_fuse.shape[0], self.S, self.D)
+            alpha = self.alpha.to(device=q_bias.device, dtype=torch.float32)
+            out = alpha * q_bias
+        out = torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+        return out.to(orig_dtype)

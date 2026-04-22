@@ -90,15 +90,32 @@ class MM(nn.Module):
                         alpha_init=self.args.ode_cq_alpha_init,
                         alpha_learn=_as_bool(self.args.ode_cq_alpha_learn),
                     )
+                # alpha frozen at 0 ⇒ q_bias ≡ 0 and every upstream gradient is
+                # killed by the α multiplication. Short-circuit the whole ODE
+                # stack and freeze its params so DDP does not see unused grads.
+                self._ode_cq_skip = (
+                    not _as_bool(self.args.ode_cq_alpha_learn)
+                    and float(self.args.ode_cq_alpha_init) == 0.0
+                )
+                if self._ode_cq_skip:
+                    for p in self.fuseblocktoshallow.parameters():
+                        p.requires_grad_(False)
+                    for p in self.delta_q.parameters():
+                        p.requires_grad_(False)
+                    for i in range(len(self.chart_vox_l) - 1):
+                        for p in self.chart_vox_l[i].parameters():
+                            p.requires_grad_(False)
             else:
                 self.chart_vox_l = None
                 self.fuseblocktoshallow = None
                 self.delta_q = None
+                self._ode_cq_skip = False
         else:
             self.chart_img = None
             self.chart_vox = None
             self.chart_vox_l = None
             self.delta_q = None
+            self._ode_cq_skip = False
 
         # Ensure img_dims are correctly passed to FuseBlockToShallow
         if self.vlaq_only:
@@ -167,10 +184,17 @@ class MM(nn.Module):
         }
 
     def _ode_cq_tokens_and_bias(self, imagefeatmaplist, voxfeatmaplist):
-        if self.fuseblocktoshallow is None or self.delta_q is None:
-            raise RuntimeError("ODE-CQ path requires fuseblocktoshallow and delta_q")
         if self.chart_vox_l is None:
             raise RuntimeError("ODE-CQ path requires per-stage voxel charts")
+
+        if self._ode_cq_skip:
+            img_tokens_last = self._flatten_patch_tokens(imagefeatmaplist[-1])
+            z_img = self.chart_img(img_tokens_last)
+            z_vox = self.chart_vox_l[-1](voxfeatmaplist[-1])
+            return z_img, z_vox, None
+
+        if self.fuseblocktoshallow is None or self.delta_q is None:
+            raise RuntimeError("ODE-CQ path requires fuseblocktoshallow and delta_q")
 
         z_img_list = [
             self.chart_img(self._flatten_patch_tokens(feat_map))
