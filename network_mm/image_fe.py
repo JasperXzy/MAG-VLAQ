@@ -20,7 +20,9 @@ class ImageFE(nn.Module):
         self.target_blocks = [int(e) for e in self.args.dino_extract_blocks.split('_')]
 
         dino_mode = getattr(self.args, 'unfreeze_dino_mode', 'frozen')
-        if self.args.lrdino == 0.0:
+        # LoRA path trains LoRA params with their own LR (args.lrdino_lora),
+        # so lrdino==0 does not force-freeze it.
+        if self.args.lrdino == 0.0 and dino_mode != 'lora':
             dino_mode = 'frozen'
 
         for param in self.fe.parameters():
@@ -37,6 +39,21 @@ class ImageFE(nn.Module):
             if hasattr(self.fe, 'norm') and self.fe.norm is not None:
                 for param in self.fe.norm.parameters():
                     param.requires_grad = True
+        elif dino_mode == 'lora':
+            from layers.lora import apply_dino_lora
+            n_inj, n_p = apply_dino_lora(
+                self.fe,
+                rank=int(getattr(self.args, 'dino_lora_rank', 8)),
+                alpha=float(getattr(self.args, 'dino_lora_alpha', 16.0)),
+                targets=getattr(self.args, 'dino_lora_targets', 'qkv'),
+                dropout=float(getattr(self.args, 'dino_lora_dropout', 0.0)),
+                blocks=getattr(self.args, 'dino_lora_blocks', 'all'),
+            )
+            import logging as _logging
+            _logging.info(
+                "[DINOv2 LoRA/query] injected %d LoRALinear, %d new trainable params",
+                n_inj, n_p,
+            )
 
     def forward_dino(self, x):
         h, w = x.shape[-2] // 14, x.shape[-1] // 14

@@ -1,0 +1,72 @@
+trainer:
+  precision: bf16-mixed
+
+checkpoint:
+  save_weights_only: true
+
+model:
+  output_type: image_vox_shallow
+  final_type: vlaq_only
+  final_l2: true
+  output_l2: true
+  features_dim: 512
+  mm_imgfe_dim: 1024
+  mm_stg2fuse_dim: 512
+  q_resize: 224
+  db_resize: 224
+  amp_dtype: bf16
+  lr: 0.00001
+  lrdb: 0.00001
+  lrpc: 0.0001
+  lrdino: 0.0
+  unfreeze_dino_mode: lora
+  dino_lora_rank: 8
+  dino_lora_alpha: 16.0
+  dino_lora_targets: "qkv"
+  dino_lora_blocks: "all"
+  dino_lora_dropout: 0.0
+  lrdino_lora: 0.0001
+  dino_extract_blocks: "7_15_23"
+  utonia_pretrained: "~/.cache/utonia/ckpt/utonia.pth"
+  lrutonia: 0.000001
+  unfreeze_utonia_mode: last1
+  utonia_extract_stages: "0_2_4"
+  vlaq_n_queries: 64
+  vlaq_query_dim: 64
+  vlaq_token_dim: 256
+  vlaq_out_dim: 512
+  vlaq_dropout: 0.0
+  vlaq_q_init: orthogonal
+  use_ode_cq: true
+  ode_cq_rank: 64
+  ode_cq_alpha_init: 0.0
+  ode_cq_alpha_learn: true
+  ode_cq_bias_scale: 0.1
+  ode_cq_max_ratio: 0.2
+  lrodecq: 0.0001
+  fuse_summary_mode: mean
+
+data:
+  dataset: kitti360
+  machine: 4090
+  epochs_num: 100
+  train_batch_size: 3
+  infer_batch_size: 32
+
+logging:
+  litlogger:
+    enabled: true
+    name: kitti360_baseline_vlaq_odecq_lora
+    root_dir: logs
+    save_logs: true
+    metadata:
+      dataset: kitti360
+      dino_blocks: "7,15,23"
+      dino_peft: "lora_rank8_qkv_all"
+      utonia_stages: "0,2,4"
+      fusion_dim: "512"
+      ode_cq_rank: "64"
+      note: "DINOv2 LoRA (rank=8, qkv, all blocks), base fully frozen"
+      repository_name: MAG-VLAQ
+      repository_branch: main
+      repository_commit_hash: cb70d2b79

@@ -10,6 +10,7 @@ except ImportError as exc:  # pragma: no cover - depends on environment
     raise ImportError("PyTorch Lightning is required for SCAModule.") from exc
 
 from compute_other_loss import compute_other_loss
+from layers.lora import is_lora_param_name
 from models_baseline.dbvanilla2d import DBVanilla2D
 from network_mm.mm import MM
 from network_mm.vlaq import VLAQ, is_vlaq_only
@@ -25,32 +26,57 @@ def _add_group(groups: List[dict], params: Iterable[torch.nn.Parameter], lr: flo
         groups.append({"params": params, "lr": lr})
 
 
+def _split_lora(named_params):
+    """Given an iterable of (name, param), split into (lora_trainable, other_trainable)."""
+    lora_trainable: List[torch.nn.Parameter] = []
+    other_trainable: List[torch.nn.Parameter] = []
+    for name, p in named_params:
+        if not p.requires_grad:
+            continue
+        if is_lora_param_name(name):
+            lora_trainable.append(p)
+        else:
+            other_trainable.append(p)
+    return lora_trainable, other_trainable
+
+
+def _add_image_fe_groups(groups, image_fe_module, args, default_lr):
+    """Split an ImageFE's trainable params into a LoRA group (lrdino_lora) and
+    a non-LoRA group (lrdino or default_lr). Handles the lora / last2 / frozen
+    modes uniformly."""
+    lora_params, other_params = _split_lora(image_fe_module.named_parameters())
+    if lora_params:
+        lrdino_lora = getattr(args, "lrdino_lora", None)
+        lora_lr = float(lrdino_lora) if lrdino_lora is not None else args.lr
+        _add_group(groups, lora_params, lora_lr)
+    if other_params:
+        # Fall back to args.lr when lrdino is 0 but non-LoRA params somehow
+        # remain trainable (guards against config mistakes).
+        base_lr = args.lrdino if getattr(args, "lrdino", 0.0) > 0.0 else default_lr
+        _add_group(groups, other_params, base_lr)
+
+
 def build_param_groups(model: nn.Module, modelq: nn.Module, args) -> Tuple[List[dict], List[dict]]:
     vlaq_only = is_vlaq_only(args)
     params_db: List[dict] = []
     if isinstance(model, DBVanilla2D):
         if vlaq_only:
-            if getattr(args, "lrdino", 0.0) > 0.0:
-                _add_group(params_db, _trainable(model.dbimage_fes.parameters()), args.lrdino)
+            _add_image_fe_groups(params_db, model.dbimage_fes, args, default_lr=args.lrdb)
             if getattr(model, "chart_a", None) is not None:
                 _add_group(params_db, _trainable(model.chart_a.parameters()), args.lrdb)
-        elif getattr(args, "lrdino", 0.0) > 0.0:
-            dino_params = list(model.dbimage_fes.parameters())
+        elif getattr(args, "lrdino", 0.0) > 0.0 or getattr(args, "unfreeze_dino_mode", "frozen") == "lora":
+            _add_image_fe_groups(params_db, model.dbimage_fes, args, default_lr=args.lrdb)
             base_params = [
                 p for name, p in model.named_parameters()
                 if not name.startswith("dbimage_fes.")
             ]
-            _add_group(params_db, _trainable(dino_params), args.lrdino)
             _add_group(params_db, _trainable(base_params), args.lrdb)
         else:
             _add_group(params_db, _trainable(model.parameters()), args.lrdb)
 
     params_q: List[dict] = []
     if isinstance(modelq, MM):
-        if getattr(args, "lrdino", 0.0) > 0.0:
-            _add_group(params_q, _trainable(modelq.image_fe.parameters()), args.lrdino)
-        else:
-            _add_group(params_q, _trainable(modelq.image_fe.parameters()), args.lr)
+        _add_image_fe_groups(params_q, modelq.image_fe, args, default_lr=args.lr)
 
         _add_group(params_q, _trainable(modelq.image_pool.parameters()), args.lr)
 
