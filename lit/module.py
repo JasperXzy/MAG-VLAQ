@@ -10,7 +10,7 @@ except ImportError as exc:  # pragma: no cover - depends on environment
     raise ImportError("PyTorch Lightning is required for SCAModule.") from exc
 
 from compute_other_loss import compute_other_loss
-from layers.lora import is_lora_param_name
+from layers.lora import is_lora_param_name, is_adapter_param_name
 from models_baseline.dbvanilla2d import DBVanilla2D
 from network_mm.mm import MM
 from network_mm.vlaq import VLAQ, is_vlaq_only
@@ -26,47 +26,63 @@ def _add_group(groups: List[dict], params: Iterable[torch.nn.Parameter], lr: flo
         groups.append({"params": params, "lr": lr})
 
 
-def _split_lora(named_params):
-    """Given an iterable of (name, param), split into (lora_trainable, other_trainable)."""
+def _split_peft(named_params):
+    """Given an iterable of (name, param), split trainable params into
+    (lora, adapter, other) buckets. LoRA params have 'lora_A'/'lora_B' in
+    their name; adapter params live under a child module named 'adapter'."""
     lora_trainable: List[torch.nn.Parameter] = []
+    adapter_trainable: List[torch.nn.Parameter] = []
     other_trainable: List[torch.nn.Parameter] = []
     for name, p in named_params:
         if not p.requires_grad:
             continue
         if is_lora_param_name(name):
             lora_trainable.append(p)
+        elif is_adapter_param_name(name):
+            adapter_trainable.append(p)
         else:
             other_trainable.append(p)
-    return lora_trainable, other_trainable
+    return lora_trainable, adapter_trainable, other_trainable
 
 
 def _add_image_fe_groups(groups, image_fe_module, args, default_lr):
-    """Split an ImageFE's trainable params into a LoRA group (lrdino_lora) and
-    a non-LoRA group (lrdino or default_lr). Handles the lora / last2 / frozen
-    modes uniformly."""
-    lora_params, other_params = _split_lora(image_fe_module.named_parameters())
-    if lora_params:
+    """Split an ImageFE's trainable params into LoRA / MultiConv-adapter /
+    non-PEFT groups. Each gets its own LR.
+
+    - LoRA params      -> lrdino_lora (default args.lr)
+    - Adapter params   -> lrdino_mc (default args.lrpc)
+    - Other trainable  -> lrdino if >0, else default_lr
+    """
+    lora_p, adapter_p, other_p = _split_peft(image_fe_module.named_parameters())
+    if lora_p:
         lrdino_lora = getattr(args, "lrdino_lora", None)
-        lora_lr = float(lrdino_lora) if lrdino_lora is not None else args.lr
-        _add_group(groups, lora_params, lora_lr)
-    if other_params:
-        # Fall back to args.lr when lrdino is 0 but non-LoRA params somehow
-        # remain trainable (guards against config mistakes).
+        lr = float(lrdino_lora) if lrdino_lora is not None else args.lr
+        _add_group(groups, lora_p, lr)
+    if adapter_p:
+        lrdino_mc = getattr(args, "lrdino_mc", None)
+        lr = float(lrdino_mc) if lrdino_mc is not None else getattr(args, "lrpc", args.lr)
+        _add_group(groups, adapter_p, lr)
+    if other_p:
         base_lr = args.lrdino if getattr(args, "lrdino", 0.0) > 0.0 else default_lr
-        _add_group(groups, other_params, base_lr)
+        _add_group(groups, other_p, base_lr)
 
 
 def _add_utonia_fe_groups(groups, vox_fe_module, args):
-    """Split UtoniaFE's trainable params into PTv3 LoRA (lrutonia_lora),
-    PTv3 non-LoRA (lrutonia), projs (lrpc) and other_vox (lrpc).
-    Handles lora / last1 / frozen / full modes uniformly."""
+    """Split UtoniaFE's trainable params into PTv3 LoRA / MLP-adapter /
+    PTv3 non-PEFT (e.g. embedding, last1) / projs / other_vox groups.
+    Handles lora / mlp_adapter / last1 / frozen / full modes uniformly."""
     ptv3 = vox_fe_module.ptv3
-    ptv3_lora, ptv3_other = _split_lora(ptv3.named_parameters())
+    ptv3_lora, ptv3_adapter, ptv3_other = _split_peft(ptv3.named_parameters())
 
     if ptv3_lora:
         lrutonia_lora = getattr(args, "lrutonia_lora", None)
-        lora_lr = float(lrutonia_lora) if lrutonia_lora is not None else args.lrpc
-        _add_group(groups, ptv3_lora, lora_lr)
+        lr = float(lrutonia_lora) if lrutonia_lora is not None else args.lrpc
+        _add_group(groups, ptv3_lora, lr)
+
+    if ptv3_adapter:
+        lrutonia_mlp = getattr(args, "lrutonia_mlp", None)
+        lr = float(lrutonia_mlp) if lrutonia_mlp is not None else args.lrpc
+        _add_group(groups, ptv3_adapter, lr)
 
     if ptv3_other and getattr(args, "lrutonia", 0.0) > 0.0:
         _add_group(groups, ptv3_other, args.lrutonia)
@@ -90,7 +106,7 @@ def build_param_groups(model: nn.Module, modelq: nn.Module, args) -> Tuple[List[
             _add_image_fe_groups(params_db, model.dbimage_fes, args, default_lr=args.lrdb)
             if getattr(model, "chart_a", None) is not None:
                 _add_group(params_db, _trainable(model.chart_a.parameters()), args.lrdb)
-        elif getattr(args, "lrdino", 0.0) > 0.0 or getattr(args, "unfreeze_dino_mode", "frozen") == "lora":
+        elif getattr(args, "lrdino", 0.0) > 0.0 or getattr(args, "unfreeze_dino_mode", "frozen") in ("lora", "multiconv"):
             _add_image_fe_groups(params_db, model.dbimage_fes, args, default_lr=args.lrdb)
             base_params = [
                 p for name, p in model.named_parameters()

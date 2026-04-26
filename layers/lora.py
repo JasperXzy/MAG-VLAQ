@@ -125,6 +125,11 @@ def is_lora_param_name(name: str) -> bool:
     return "lora_A" in name or "lora_B" in name
 
 
+def is_adapter_param_name(name: str) -> bool:
+    """True for params under a child module named 'adapter' (MultiConv / MLP adapters)."""
+    return ".adapter." in name
+
+
 # Path into a PTv3 Block to reach each target nn.Linear. MLP is wrapped in a
 # PointSequential so we have to index through 0 first.
 _PTV3_TARGET_PATH = {

@@ -125,16 +125,28 @@ class UtoniaFE(nn.Module):
                     "[Utonia LoRA] injected %d LoRALinear, %d new trainable params",
                     n_inj, n_p,
                 )
+            elif freeze_mode == 'mlp_adapter':
+                from layers.mlp_adapter import apply_utonia_mlp_adapter
+                n_inj, n_p = apply_utonia_mlp_adapter(
+                    self.ptv3,
+                    stages=getattr(self.args, 'utonia_mlp_stages', '4'),
+                    ratio=float(getattr(self.args, 'utonia_mlp_ratio', 0.25)),
+                    dropout=float(getattr(self.args, 'utonia_mlp_dropout', 0.0)),
+                )
+                logging.info(
+                    "[Utonia MLP Adapter] wrapped %d blocks, %d new trainable params",
+                    n_inj, n_p,
+                )
 
             # Always keep the adapted embedding trainable for domain adaptation
             for param in self.ptv3.embedding.parameters():
                 param.requires_grad = True
 
             # lrutonia=0 overrides freeze_mode → fully freeze PTv3, but for
-            # lora mode the LoRA params use lrutonia_lora instead, so lrutonia=0
-            # must not disable them.
+            # lora / mlp_adapter modes the adapter params use their own LR, so
+            # lrutonia=0 must not disable them.
             lrutonia = getattr(self.args, 'lrutonia', 0.0)
-            if lrutonia == 0.0 and freeze_mode != 'lora':
+            if lrutonia == 0.0 and freeze_mode not in ('lora', 'mlp_adapter'):
                 for param in self.ptv3.parameters():
                     param.requires_grad = False
                 logging.info("[Utonia] lrutonia=0 -> PTv3 fully frozen (no grad)")

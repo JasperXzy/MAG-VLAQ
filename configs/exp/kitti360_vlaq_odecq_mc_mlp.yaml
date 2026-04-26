@@ -1,0 +1,77 @@
+trainer:
+  precision: bf16-mixed
+
+checkpoint:
+  save_weights_only: true
+
+model:
+  output_type: image_vox_shallow
+  final_type: vlaq_only
+  final_l2: true
+  output_l2: true
+  features_dim: 512
+  mm_imgfe_dim: 1024
+  mm_stg2fuse_dim: 512
+  q_resize: 224
+  db_resize: 224
+  amp_dtype: bf16
+  lr: 0.00001
+  lrdb: 0.00001
+  lrpc: 0.0001
+  # DINOv2 MultiConv adapter on last 2 blocks (parallel to MLP)
+  lrdino: 0.0
+  unfreeze_dino_mode: multiconv
+  dino_mc_blocks: "22_23"
+  dino_mc_ratio: 0.5
+  dino_mc_kernels: "1_3_5"
+  lrdino_mc: 0.00005
+  dino_extract_blocks: "7_15_23"
+  # Utonia MLP adapter on enc4 (last stage, 3 blocks)
+  utonia_pretrained: "~/.cache/utonia/ckpt/utonia.pth"
+  lrutonia: 0.000001
+  unfreeze_utonia_mode: mlp_adapter
+  utonia_mlp_stages: "4"
+  utonia_mlp_ratio: 0.25
+  utonia_mlp_dropout: 0.0
+  lrutonia_mlp: 0.00005
+  utonia_extract_stages: "0_2_4"
+  vlaq_n_queries: 64
+  vlaq_query_dim: 64
+  vlaq_token_dim: 256
+  vlaq_out_dim: 512
+  vlaq_dropout: 0.1
+  vlaq_q_init: orthogonal
+  use_ode_cq: true
+  ode_cq_rank: 64
+  ode_cq_alpha_init: 0.0
+  ode_cq_alpha_learn: true
+  ode_cq_bias_scale: 0.1
+  ode_cq_max_ratio: 0.4
+  lrodecq: 0.0001
+  fuse_summary_mode: mean
+
+data:
+  dataset: kitti360
+  machine: 4090
+  epochs_num: 100
+  train_batch_size: 3
+  infer_batch_size: 32
+
+logging:
+  litlogger:
+    enabled: true
+    name: kitti360_vlaq_odecq_mc_mlp
+    root_dir: logs
+    save_logs: true
+    metadata:
+      dataset: kitti360
+      dino_blocks: "7,15,23"
+      dino_peft: "multiconv_b22-23_r0.5_k1+3+5"
+      utonia_stages: "0,2,4"
+      utonia_peft: "mlp_adapter_enc4_r0.25"
+      fusion_dim: "512"
+      ode_cq_rank: "64"
+      note: "DINO MultiConv (last 2 blocks, parallel-to-MLP) + Utonia MLP adapter (enc4, parallel-to-MLP); both backbones frozen except Utonia embedding"
+      repository_name: MAG-VLAQ
+      repository_branch: main
+      repository_commit_hash: cb70d2b79

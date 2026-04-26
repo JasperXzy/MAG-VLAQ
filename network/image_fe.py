@@ -19,9 +19,10 @@ class ImageFE(nn.Module):
         self.last_dim = 1024
 
         dino_mode = getattr(self.args, 'unfreeze_dino_mode', 'frozen')
-        # LoRA path trains LoRA params with their own LR (args.lrdino_lora),
-        # so lrdino==0 does not force-freeze it.
-        if self.args.lrdino == 0.0 and dino_mode != 'lora':
+        # LoRA / multiconv paths train adapter params with their own LR
+        # (args.lrdino_lora / args.lrdino_mc), so lrdino==0 does not
+        # force-freeze them.
+        if self.args.lrdino == 0.0 and dino_mode not in ('lora', 'multiconv'):
             dino_mode = 'frozen'
 
         for param in self.fe.parameters():
@@ -51,6 +52,19 @@ class ImageFE(nn.Module):
             import logging as _logging
             _logging.info(
                 "[DINOv2 LoRA/db] injected %d LoRALinear, %d new trainable params",
+                n_inj, n_p,
+            )
+        elif dino_mode == 'multiconv':
+            from layers.mulconv_adapter import apply_dino_multiconv
+            n_inj, n_p = apply_dino_multiconv(
+                self.fe,
+                blocks=getattr(self.args, 'dino_mc_blocks', '22_23'),
+                ratio=float(getattr(self.args, 'dino_mc_ratio', 0.5)),
+                kernels=getattr(self.args, 'dino_mc_kernels', '1_3_5'),
+            )
+            import logging as _logging
+            _logging.info(
+                "[DINOv2 MultiConv/db] wrapped %d blocks, %d new trainable params",
                 n_inj, n_p,
             )
 
