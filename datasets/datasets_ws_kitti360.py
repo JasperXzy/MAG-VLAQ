@@ -911,12 +911,19 @@ class KITTI360TripletsDataset(KITTI360BaseDataset):
         if len(queries_without_any_hard_positive) != 0:
             logging.info(f"There are {len(queries_without_any_hard_positive)} queries without any positives " +
                          "within the training set. They won't be considered as they're useless for training.")
-        # Remove queries without positives
-        # self.hard_positives_per_query = np.delete(self.hard_positives_per_query, queries_without_any_hard_positive)
-        self.hard_positives_per_query = [p for i, p in enumerate(self.hard_positives_per_query) if i not in queries_without_any_hard_positive]
+        keep_query_mask = np.ones(len(self.hard_positives_per_query), dtype=bool)
+        keep_query_mask[queries_without_any_hard_positive] = False
 
-
-        self.queries_infos = [e for i, e in enumerate(self.queries_infos) if i not in queries_without_any_hard_positive]
+        self.hard_positives_per_query = [
+            p for i, p in enumerate(self.hard_positives_per_query) if keep_query_mask[i]
+        ]
+        self.soft_positives_per_query = [
+            p for i, p in enumerate(self.soft_positives_per_query) if keep_query_mask[i]
+        ]
+        self.queries_infos = [
+            e for i, e in enumerate(self.queries_infos) if keep_query_mask[i]
+        ]
+        self.queries_utms = self.queries_utms[keep_query_mask]
         self.database_queries_infos = self.database_infos + self.queries_infos  # db + q
         self.queries_num = len(self.queries_infos)
 
