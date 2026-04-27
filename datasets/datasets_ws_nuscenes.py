@@ -1260,6 +1260,7 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         self.queries_utms = self.queries_utms[keep_query_mask]
         self.database_queries_infos = self.database_infos + self.queries_infos  # db + q
         self.queries_num = len(self.queries_infos)
+        self.database_indexes_by_location = self._build_database_indexes_by_location()
 
 
         # msls_weighted refers to the mining presented in MSLS paper's supplementary.
@@ -1280,6 +1281,65 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
             self.weights /= self.weights.sum()
             logging.info(f"#sideways_indexes [{len(sideways_indexes)}/{self.queries_num}]; " +
                          "#night_indexes; [{len(night_indexes)}/{self.queries_num}]")
+
+    def _build_database_indexes_by_location(self):
+        indexes_by_location = {}
+        for db_index, info in enumerate(self.database_infos):
+            indexes_by_location.setdefault(info['location'], []).append(db_index)
+        return {
+            location: np.asarray(indexes, dtype=np.int64)
+            for location, indexes in indexes_by_location.items()
+        }
+
+    def _sample_database_indexes_by_query_location(self, sampled_queries_indexes):
+        sampled_by_location = {}
+        query_locations = sorted({
+            self.queries_infos[int(query_index)]['location']
+            for query_index in sampled_queries_indexes
+        })
+        for location in query_locations:
+            pool = self.database_indexes_by_location.get(location)
+            if pool is None or len(pool) == 0:
+                pool = np.arange(self.database_num, dtype=np.int64)
+            sample_size = min(self.neg_samples_num, len(pool))
+            if sample_size == len(pool):
+                sampled = pool.copy()
+            else:
+                sampled = np.random.choice(pool, sample_size, replace=False)
+            sampled_by_location[location] = np.asarray(sampled, dtype=np.int64)
+        return sampled_by_location
+
+    def _database_indexes_from_location_samples(self, sampled_by_location):
+        if not sampled_by_location:
+            return np.empty(0, dtype=np.int64)
+        return np.unique(np.concatenate(list(sampled_by_location.values()))).astype(np.int64)
+
+    def _negative_candidates_for_query(self, sampled_by_location, query_index, soft_positives):
+        location = self.queries_infos[int(query_index)]['location']
+        sampled_database_indexes = sampled_by_location.get(location)
+        if sampled_database_indexes is None or len(sampled_database_indexes) == 0:
+            sampled_database_indexes = self.database_indexes_by_location.get(location)
+        if sampled_database_indexes is None or len(sampled_database_indexes) == 0:
+            sampled_database_indexes = np.arange(self.database_num, dtype=np.int64)
+
+        neg_indexes = np.setdiff1d(
+            sampled_database_indexes,
+            soft_positives,
+            assume_unique=False,
+        )
+        if len(neg_indexes) < self.negs_num_per_query:
+            location_pool = self.database_indexes_by_location.get(location)
+            if location_pool is not None and len(location_pool) > 0:
+                fallback = np.setdiff1d(location_pool, soft_positives, assume_unique=False)
+                neg_indexes = np.unique(np.concatenate([neg_indexes, fallback]))
+        if len(neg_indexes) < self.negs_num_per_query:
+            fallback = np.setdiff1d(
+                np.arange(self.database_num, dtype=np.int64),
+                soft_positives,
+                assume_unique=False,
+            )
+            neg_indexes = np.unique(np.concatenate([neg_indexes, fallback]))
+        return neg_indexes.astype(np.int64)
     
 
     def __getitem__(self, index):
@@ -1600,8 +1660,12 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         elif self.mining == "msls_weighted":  # Pick night and sideways queries with higher probability
             sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False, p=self.weights)
         
-        # Sample 1000 random database images for the negatives
-        sampled_database_indexes = np.random.choice(self.database_num, self.neg_samples_num, replace=False) # why need this step?
+        sampled_database_indexes_by_location = self._sample_database_indexes_by_query_location(
+            sampled_queries_indexes
+        )
+        sampled_database_indexes = self._database_indexes_from_location_samples(
+            sampled_database_indexes_by_location
+        )
         # Take all the positives
         positives_indexes = [self.hard_positives_per_query[i] for i in sampled_queries_indexes] # [array, array, ...]
         positives_indexes = [p for pos in positives_indexes for p in pos] # [int, int, ...]
@@ -1623,7 +1687,11 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
             
             # Choose the hardest negatives within sampled_database_indexes, ensuring that there are no positives
             soft_positives = self.soft_positives_per_query[query_index]
-            neg_indexes = np.setdiff1d(sampled_database_indexes, soft_positives, assume_unique=True)
+            neg_indexes = self._negative_candidates_for_query(
+                sampled_database_indexes_by_location,
+                query_index,
+                soft_positives,
+            )
             
             # Take all database images that are negatives and are within the sampled database images (aka database_indexes)
             neg_indexes = self.get_hardest_negatives_indexes(args, cache, query_features, neg_indexes)
@@ -1647,21 +1715,26 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
                 sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False)
             elif self.mining == "msls_weighted":
                 sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False, p=self.weights)
-            sampled_database_indexes = np.random.choice(self.database_num, self.neg_samples_num, replace=False)
             sampled_queries_indexes = sampled_queries_indexes.astype(np.int64)
-            sampled_database_indexes = sampled_database_indexes.astype(np.int64)
+            sampled_database_indexes_by_location = self._sample_database_indexes_by_query_location(
+                sampled_queries_indexes
+            )
         else:
-            sampled_queries_indexes = np.zeros(args.cache_refresh_rate, dtype=np.int64)
-            sampled_database_indexes = np.zeros(self.neg_samples_num, dtype=np.int64)
+            sampled_queries_indexes = None
+            sampled_database_indexes_by_location = None
 
         if ddp_on:
-            device = args.device
-            sq_t = torch.from_numpy(sampled_queries_indexes).to(device)
-            sd_t = torch.from_numpy(sampled_database_indexes).to(device)
-            dist.broadcast(sq_t, src=0)
-            dist.broadcast(sd_t, src=0)
-            sampled_queries_indexes = sq_t.cpu().numpy()
-            sampled_database_indexes = sd_t.cpu().numpy()
+            payload = [(sampled_queries_indexes, sampled_database_indexes_by_location)]
+            if str(args.device).startswith("cuda") and torch.cuda.is_available():
+                broadcast_device = torch.device("cuda", int(os.environ.get("LOCAL_RANK", "0")))
+            else:
+                broadcast_device = torch.device("cpu")
+            dist.broadcast_object_list(payload, src=0, device=broadcast_device)
+            sampled_queries_indexes, sampled_database_indexes_by_location = payload[0]
+
+        sampled_database_indexes = self._database_indexes_from_location_samples(
+            sampled_database_indexes_by_location
+        )
 
         positives_indexes = [self.hard_positives_per_query[i] for i in sampled_queries_indexes]
         positives_indexes = [p for pos in positives_indexes for p in pos]
@@ -1677,7 +1750,11 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
                 query_features = self.get_query_features(query_index, cache)
                 best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
                 soft_positives = self.soft_positives_per_query[query_index]
-                neg_indexes = np.setdiff1d(sampled_database_indexes, soft_positives, assume_unique=True)
+                neg_indexes = self._negative_candidates_for_query(
+                    sampled_database_indexes_by_location,
+                    query_index,
+                    soft_positives,
+                )
                 neg_indexes = self.get_hardest_negatives_indexes(args, cache, query_features, neg_indexes)
                 self.triplets_global_indexes.append((query_index, best_positive_index, *neg_indexes))
             self.triplets_global_indexes = torch.tensor(self.triplets_global_indexes)
