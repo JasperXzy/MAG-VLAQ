@@ -59,6 +59,8 @@ def parse_arguments():
     parser.add_argument("--train_positives_dist_threshold", type=int, default=10)
     parser.add_argument("--neg_samples_num", type=int, default=1000,
                         help="How many negatives to use to compute the hardest ones")
+    parser.add_argument("--same_location_neg_ratio", type=float, default=0.7,
+                        help="For nuScenes mining, fraction of negative candidates sampled from the query's location")
     parser.add_argument("--negs_num_per_query", type=int, default=10,
                         help="How many negatives to consider per each query in the loss")
     parser.add_argument("--epochs_num", type=int, default=100,

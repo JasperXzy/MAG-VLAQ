@@ -10,6 +10,7 @@ model:
   final_l2: true
   output_l2: true
   features_dim: 512
+  margin: 0.2
   mm_imgfe_dim: 1024
   mm_stg2fuse_dim: 512
   q_resize: 224
@@ -47,6 +48,7 @@ data:
   epochs_num: 100
   train_batch_size: 3
   infer_batch_size: 32
+  same_location_neg_ratio: 0.7
 
 logging:
   litlogger:

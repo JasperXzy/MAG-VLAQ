@@ -1301,11 +1301,27 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
             pool = self.database_indexes_by_location.get(location)
             if pool is None or len(pool) == 0:
                 pool = np.arange(self.database_num, dtype=np.int64)
-            sample_size = min(self.neg_samples_num, len(pool))
-            if sample_size == len(pool):
-                sampled = pool.copy()
+            same_location_ratio = float(getattr(self.args, 'same_location_neg_ratio', 0.7))
+            same_location_ratio = float(np.clip(same_location_ratio, 0.0, 1.0))
+            same_location_size = int(round(self.neg_samples_num * same_location_ratio))
+            same_location_size = min(same_location_size, self.neg_samples_num)
+            local_sample_size = min(same_location_size, len(pool))
+            if local_sample_size == len(pool):
+                local_sampled = pool.copy()
             else:
-                sampled = np.random.choice(pool, sample_size, replace=False)
+                local_sampled = np.random.choice(pool, local_sample_size, replace=False)
+
+            global_sample_size = max(0, self.neg_samples_num - len(local_sampled))
+            if global_sample_size > 0:
+                all_db = np.arange(self.database_num, dtype=np.int64)
+                global_pool = np.setdiff1d(all_db, local_sampled, assume_unique=False)
+                if global_sample_size >= len(global_pool):
+                    global_sampled = global_pool
+                else:
+                    global_sampled = np.random.choice(global_pool, global_sample_size, replace=False)
+                sampled = np.unique(np.concatenate([local_sampled, global_sampled]))
+            else:
+                sampled = local_sampled
             sampled_by_location[location] = np.asarray(sampled, dtype=np.int64)
         return sampled_by_location
 
