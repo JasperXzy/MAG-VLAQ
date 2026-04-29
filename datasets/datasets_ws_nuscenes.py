@@ -16,7 +16,6 @@ from torch.utils.data.dataloader import DataLoader
 import random
 from torchvision.transforms import InterpolationMode
 import torchvision.transforms as TVT
-from layers.sparse_utils import batched_coordinates, sparse_quantize
 import copy
 import matplotlib.pyplot as plt
 import utm
@@ -32,8 +31,14 @@ from pc_augmentation import (
 )
 
 from nuscenes.nuscenes import NuScenes
-
 from nuscenes.utils.data_classes import LidarPointCloud
+import open3d as o3d
+
+
+# Utonia official input pipeline constants (transform.default(scale=0.2)
+# + GridSample(grid_size=0.01)). Effective voxel = 0.01 / 0.2 = 0.05 m.
+UTONIA_GLOBAL_SCALE = 0.2
+UTONIA_GRID_SIZE = 0.01
 
 _DATASET_PROGRESS_CALLBACK = None
 
@@ -64,6 +69,115 @@ def _progress(iterable, args=None, desc=None, disable=False):
         leave=False,
         mininterval=1.0,
     )
+
+
+def estimate_normals_o3d(pts, k=30):
+    """Per-point normal estimation with normals oriented toward LiDAR origin."""
+    n = pts.shape[0]
+    if n < 3:
+        return np.zeros((n, 3), dtype=np.float32)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(pts.astype(np.float64))
+    pcd.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamKNN(knn=min(k, n))
+    )
+    pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0, 0.0, 0.0]))
+    return np.asarray(pcd.normals, dtype=np.float32)
+
+
+def _rand_rotation_outdoor_scene():
+    theta_z = 2.0 * np.pi * (np.random.rand() - 0.5)
+    theta_x = (np.pi / 16.0) * 2.0 * (np.random.rand() - 0.5)
+    theta_y = (np.pi / 16.0) * 2.0 * (np.random.rand() - 0.5)
+    cz, sz = np.cos(theta_z), np.sin(theta_z)
+    cx, sx = np.cos(theta_x), np.sin(theta_x)
+    cy, sy = np.cos(theta_y), np.sin(theta_y)
+    Rz = np.array([[cz, -sz, 0.0], [sz,  cz, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    Ry = np.array([[cy,  0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=np.float32)
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=np.float32)
+    return (Rz @ Ry @ Rx).astype(np.float32)
+
+
+def _rand_scale_jitter(eta=1.1):
+    log_eta = np.log(eta)
+    return float(np.exp(np.random.uniform(-log_eta, log_eta)))
+
+
+def _rand_anisotropic_jitter(eta=1.1):
+    log_eta = np.log(eta)
+    return np.exp(np.random.uniform(-log_eta, log_eta, size=3)).astype(np.float32)
+
+
+def _causal_modality_blind(rgb, normal, p_drop_rgb=0.3, p_drop_normal=0.3):
+    if np.random.rand() < p_drop_rgb:
+        rgb = np.zeros_like(rgb)
+    if np.random.rand() < p_drop_normal:
+        normal = np.zeros_like(normal)
+    return rgb, normal
+
+
+def _dedup_grid(coords_int_np):
+    _, keep = np.unique(coords_int_np, axis=0, return_index=True)
+    keep.sort()
+    return keep
+
+
+def _build_utonia_batch(query_pc, query_pc_rgb, query_pc_normal, train):
+    utonia_coord_list, utonia_grid_list, utonia_rgb_list, utonia_normal_list = [], [], [], []
+    utonia_point_counts = []
+    me_coord_list, me_batch_ids = [], []
+    for i, p in enumerate(query_pc):
+        p_np = p if isinstance(p, np.ndarray) else p.numpy()
+        p_np = p_np.astype(np.float32, copy=False)
+        r_np = query_pc_rgb[i]
+        if not isinstance(r_np, np.ndarray):
+            r_np = r_np.numpy()
+        r_np = r_np.astype(np.float32, copy=False)
+        n_np = query_pc_normal[i]
+        if not isinstance(n_np, np.ndarray):
+            n_np = n_np.numpy()
+        n_np = n_np.astype(np.float32, copy=False)
+
+        if train:
+            R = _rand_rotation_outdoor_scene()
+            s = _rand_scale_jitter(eta=1.1)
+            aniso = _rand_anisotropic_jitter(eta=1.1)
+            p_aug = (p_np @ R) * (s * aniso)
+            n_aug = n_np @ R
+            r_np, n_aug = _causal_modality_blind(r_np, n_aug, p_drop_rgb=0.3, p_drop_normal=0.3)
+        else:
+            p_aug = p_np
+            n_aug = n_np
+
+        p_scaled = p_aug * UTONIA_GLOBAL_SCALE
+        p_int = np.floor(p_scaled / UTONIA_GRID_SIZE).astype(np.int32)
+        keep = _dedup_grid(p_int)
+        p_scaled_k = p_scaled[keep]
+        p_int_k = p_int[keep]
+        r_k = r_np[keep] if r_np.shape[0] == p_np.shape[0] else np.zeros((len(keep), 3), dtype=np.float32)
+        n_k = n_aug[keep]
+
+        n_pts = len(keep)
+        utonia_coord_list.append(torch.from_numpy(p_scaled_k))
+        utonia_grid_list.append(torch.from_numpy(p_int_k))
+        utonia_rgb_list.append(torch.from_numpy(r_k))
+        utonia_normal_list.append(torch.from_numpy(n_k))
+        utonia_point_counts.append(n_pts)
+
+        me_int = np.floor(p_aug).astype(np.int32)
+        me_coord_list.append(torch.from_numpy(me_int))
+        me_batch_ids.append(torch.full((me_int.shape[0], 1), i, dtype=torch.int32))
+
+    utonia_coord = torch.cat(utonia_coord_list, dim=0).float()
+    utonia_grid_coord = torch.cat(utonia_grid_list, dim=0).int()
+    utonia_rgb = torch.cat(utonia_rgb_list, dim=0).float()
+    utonia_normal = torch.cat(utonia_normal_list, dim=0).float()
+    utonia_offset = torch.cumsum(torch.tensor(utonia_point_counts), dim=0)
+
+    coords = torch.cat([torch.cat(me_batch_ids, dim=0), torch.cat(me_coord_list, dim=0)], dim=1)
+    feats = torch.ones([coords.shape[0], 1]).float()
+    utonia_feat = utonia_coord.clone()
+    return coords, feats, utonia_coord, utonia_grid_coord, utonia_feat, utonia_rgb, utonia_normal, utonia_offset
 
 
 
@@ -160,14 +274,18 @@ def nuscenes_collate_fn(batch):
     db_eastnorth = torch.stack([e[0]['db_eastnorth'] for e in batch])
     # positive_db_map = torch.stack([e[0]['positive_db_map'] for e in batch]) 
     # negative_db_maps = torch.stack([e[0]['negative_db_maps'] for e in batch]) 
-    # ---- batch augmentation (quantize is in __getitem__)
-    coords = batched_coordinates(query_pc)
-    batchids = coords[:,:1]
-    coords = coords[:,1:]
-    coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
-    coords = torch.cat([batchids, coords], dim=1)
-    coords = coords.int()
-    feats = torch.ones([coords.shape[0], 1]).float()
+    query_pc_rgb = [e[0]['query_pc_rgb'] for e in batch]
+    query_pc_normal = [e[0]['query_pc_normal'] for e in batch]
+    (
+        coords,
+        feats,
+        utonia_coord,
+        utonia_grid_coord,
+        utonia_feat,
+        utonia_rgb,
+        utonia_normal,
+        utonia_offset,
+    ) = _build_utonia_batch(query_pc, query_pc_rgb, query_pc_normal, train=True)
 
     # feats = torch.ones([coords.shape[0], 1]).float()
     triplets_local_indexes = torch.cat([e[1][None] for e in batch])
@@ -188,6 +306,12 @@ def nuscenes_collate_fn(batch):
         # 'negative_db_maps': negative_db_maps,
         'db_map': db_map,
         'db_eastnorth': db_eastnorth,
+        'utonia_coord': utonia_coord,
+        'utonia_grid_coord': utonia_grid_coord,
+        'utonia_feat': utonia_feat,
+        'utonia_rgb': utonia_rgb,
+        'utonia_normal': utonia_normal,
+        'utonia_offset': utonia_offset,
     }
     # return images, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
     return output_dict, torch.cat(tuple(triplets_local_indexes)), triplets_global_indexes
@@ -247,15 +371,18 @@ def nuscenes_collate_fn_cache_q(batch):
     query_bev = torch.stack([e[0]['query_bev'] for e in batch])
     query_sph = torch.stack([e[0]['query_sph'] for e in batch])
     query_pc = [e[0]['query_pc'] for e in batch]
-    # ---- batch augmentation (quantize is in __getitem__)
-    coords = batched_coordinates(query_pc)
-    batchids = coords[:,:1]
-    coords = coords[:,1:]
-    coords = PCRandomRotation(max_theta=5, max_theta2=0, axis=np.array([0, 0, 1]))(coords) # CPU intense
-    # coords = coords * 0 # for test
-    coords = torch.cat([batchids, coords], dim=1)
-    coords = coords.int()
-    feats = torch.ones([coords.shape[0], 1]).float()
+    query_pc_rgb = [e[0]['query_pc_rgb'] for e in batch]
+    query_pc_normal = [e[0]['query_pc_normal'] for e in batch]
+    (
+        coords,
+        feats,
+        utonia_coord,
+        utonia_grid_coord,
+        utonia_feat,
+        utonia_rgb,
+        utonia_normal,
+        utonia_offset,
+    ) = _build_utonia_batch(query_pc, query_pc_rgb, query_pc_normal, train=False)
     query_location = [e[0]['query_location'] for e in batch]
     query_eastnorth = torch.stack([e[0]['query_eastnorth'] for e in batch])
 
@@ -278,6 +405,12 @@ def nuscenes_collate_fn_cache_q(batch):
         'db_map': db_map,
         'query_location': query_location,
         'query_eastnorth': query_eastnorth,
+        'utonia_coord': utonia_coord,
+        'utonia_grid_coord': utonia_grid_coord,
+        'utonia_feat': utonia_feat,
+        'utonia_rgb': utonia_rgb,
+        'utonia_normal': utonia_normal,
+        'utonia_offset': utonia_offset,
     }
     return output_dict, indices
 
@@ -570,6 +703,137 @@ def get_datapaths_from_sample_token(nusc, sample_token):
     return datapaths
 
 
+def _camnames_from_args(args):
+    name_map = {
+        'f': 'CAM_FRONT',
+        'fl': 'CAM_FRONT_LEFT',
+        'fr': 'CAM_FRONT_RIGHT',
+        'b': 'CAM_BACK',
+        'bl': 'CAM_BACK_LEFT',
+        'br': 'CAM_BACK_RIGHT',
+    }
+    return [name_map[name] for name in args.camnames.split('_')]
+
+
+def _quat_to_rotmat(rotation):
+    q = np.asarray(rotation, dtype=np.float32)
+    q = q / max(float(np.linalg.norm(q)), 1e-8)
+    w, x, y, z = q
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float32,
+    )
+
+
+def _transform_points(points, rotation, translation):
+    rot = _quat_to_rotmat(rotation)
+    trans = np.asarray(translation, dtype=np.float32)
+    return points @ rot.T + trans
+
+
+def _inverse_transform_points(points, rotation, translation):
+    rot = _quat_to_rotmat(rotation)
+    trans = np.asarray(translation, dtype=np.float32)
+    return (points - trans) @ rot
+
+
+def _lidar_to_global(points, lidar_cs, lidar_pose):
+    points = _transform_points(points, lidar_cs['rotation'], lidar_cs['translation'])
+    points = _transform_points(points, lidar_pose['rotation'], lidar_pose['translation'])
+    return points
+
+
+def _global_to_camera(points_global, cam_cs, cam_pose):
+    points = _inverse_transform_points(points_global, cam_pose['rotation'], cam_pose['translation'])
+    points = _inverse_transform_points(points, cam_cs['rotation'], cam_cs['translation'])
+    return points
+
+
+def _load_lidar_points(file_path):
+    try:
+        points = LidarPointCloud.from_file(file_path).points.T[:, :3]
+        return points.astype(np.float32, copy=False)
+    except Exception:
+        arr = np.fromfile(file_path, dtype=np.float32)
+        if arr.size % 5 == 0:
+            return arr.reshape(-1, 5)[:, :3].astype(np.float32, copy=False)
+        if arr.size % 4 == 0:
+            return arr.reshape(-1, 4)[:, :3].astype(np.float32, copy=False)
+        if arr.size % 3 == 0:
+            return arr.reshape(-1, 3).astype(np.float32, copy=False)
+        raise ValueError(f"Cannot parse LiDAR point cloud: {file_path}, float_count={arr.size}")
+
+
+def _sensor_file_path(nusc, sample, sensorname):
+    datatoken = sample['data'][sensorname]
+    data = nusc.get('sample_data', datatoken)
+    return data, os.path.join(nusc.dataroot, data['filename'])
+
+
+def _resized_camera_path(raw_path, size=256):
+    path_parts = raw_path.split('/')
+    path_parts[-2] += f'_size{size}'
+    return '/'.join(path_parts)
+
+
+def colorize_lidar_points_nuscenes(nusc, sample, points, camera_names):
+    """Project LiDAR points into selected NuScenes cameras and average RGB."""
+    if points.shape[0] == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+
+    lidar_data, _ = _sensor_file_path(nusc, sample, 'LIDAR_TOP')
+    lidar_cs = nusc.get('calibrated_sensor', lidar_data['calibrated_sensor_token'])
+    lidar_pose = nusc.get('ego_pose', lidar_data['ego_pose_token'])
+    points_global = _lidar_to_global(points, lidar_cs, lidar_pose)
+
+    rgb_sum = np.zeros((points.shape[0], 3), dtype=np.float32)
+    count = np.zeros((points.shape[0],), dtype=np.float32)
+    for camera_name in camera_names:
+        cam_data, raw_path = _sensor_file_path(nusc, sample, camera_name)
+        img_path = raw_path if os.path.exists(raw_path) else _resized_camera_path(raw_path)
+        if not os.path.exists(img_path):
+            continue
+
+        cam_cs = nusc.get('calibrated_sensor', cam_data['calibrated_sensor_token'])
+        cam_pose = nusc.get('ego_pose', cam_data['ego_pose_token'])
+        pts_cam = _global_to_camera(points_global, cam_cs, cam_pose)
+        depth = pts_cam[:, 2]
+        valid = depth > 0.1
+        if not valid.any():
+            continue
+
+        intrinsic = np.asarray(cam_cs['camera_intrinsic'], dtype=np.float32)
+        pixels = pts_cam @ intrinsic.T
+        u = pixels[:, 0] / np.clip(pixels[:, 2], 1e-8, None)
+        v = pixels[:, 1] / np.clip(pixels[:, 2], 1e-8, None)
+
+        image = Image.open(img_path).convert('RGB')
+        img_w, img_h = image.size
+        orig_w = float(cam_data.get('width') or img_w)
+        orig_h = float(cam_data.get('height') or img_h)
+        if img_w != orig_w or img_h != orig_h:
+            u = u * (img_w / orig_w)
+            v = v * (img_h / orig_h)
+
+        valid = valid & (u >= 0) & (u < img_w) & (v >= 0) & (v < img_h)
+        if not valid.any():
+            continue
+        image_np = np.asarray(image)
+        u_int = np.clip(u[valid].astype(np.int32), 0, img_w - 1)
+        v_int = np.clip(v[valid].astype(np.int32), 0, img_h - 1)
+        rgb_sum[valid] += image_np[v_int, u_int, :3].astype(np.float32) / 255.0
+        count[valid] += 1.0
+
+    rgb = np.zeros((points.shape[0], 3), dtype=np.float32)
+    seen = count > 0
+    rgb[seen] = rgb_sum[seen] / count[seen, None]
+    return rgb
+
+
 
 
 
@@ -581,24 +845,18 @@ def load_sensordata_from_sampletoken(nusc, sample_token, args):
                    'CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 
                    'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
     sensordatas = {}
+    camera_names = _camnames_from_args(args)
     for sensorname in sensornames:
         datatoken = sample['data'][sensorname]
         data = nusc.get('sample_data', datatoken)
         dataname = data['filename']
         datapath = os.path.join(nusc.dataroot, dataname)
         if sensorname == 'LIDAR_TOP':
-            # load pc using .pcd.bin
-            # pc = LidarPointCloud.from_file(datapath).points.T # [n,4]
-            # pc = pc[:,:3] # [n,3]
-            # load pc using .npy
-            pcpath = datapath.replace('.pcd.bin', '.npy')
-            pcpath = pcpath.split('/')
-            pcpath[-2] += f'_voxel{1}'
-            pcpath = '/'.join(pcpath)
-            pc = np.load(pcpath, allow_pickle=True)
-            pc = sparse_quantize(coordinates=pc, quantization_size=args.quant_size)
+            pc = _load_lidar_points(datapath)
             sensordatas['LIDAR_TOP'] = pc
-            
+            sensordatas['LIDAR_TOP_RGB'] = colorize_lidar_points_nuscenes(
+                nusc, sample, pc, camera_names
+            )
             sensordatas['RANGE_DATA'] = torch.empty(0)
 
             # load bev
@@ -614,9 +872,9 @@ def load_sensordata_from_sampletoken(nusc, sample_token, args):
             # sensordatas['BEV_DATA'] = bev
             sensordatas['BEV_DATA'] = torch.empty(0)
         else: # for cameras
-            datapath = datapath.split('/')
-            datapath[-2] += f'_size{256}' 
-            datapath = '/'.join(datapath)
+            datapath = _resized_camera_path(datapath)
+            if not os.path.exists(datapath):
+                datapath = os.path.join(nusc.dataroot, dataname)
             image = Image.open(datapath)
             tf = TVT.Compose([TVT.Resize((args.q_resize, args.q_resize), antialias=True),
                               TVT.ToTensor(),
@@ -627,22 +885,8 @@ def load_sensordata_from_sampletoken(nusc, sample_token, args):
 
     # Stack
     qcam = [] 
-    camnames = args.camnames.split('_')
-    for camname in camnames:
-        if camname == 'f':
-            qcam.append(sensordatas['CAM_FRONT'])
-        elif camname == 'fl':
-            qcam.append(sensordatas['CAM_FRONT_LEFT'])
-        elif camname == 'fr':
-            qcam.append(sensordatas['CAM_FRONT_RIGHT'])
-        elif camname == 'b':
-            qcam.append(sensordatas['CAM_BACK'])
-        elif camname == 'bl':
-            qcam.append(sensordatas['CAM_BACK_LEFT'])
-        elif camname == 'br':
-            qcam.append(sensordatas['CAM_BACK_RIGHT'])
-        else:
-            raise NotImplementedError
+    for camera_name in camera_names:
+        qcam.append(sensordatas[camera_name])
     # qcam = torch.stack(qcam, dim=0) # [ncam,3,h,w]
     qcam = torch.cat(qcam, dim=-1) # [3,h,w*ncam] panorama cat
     # TODO: support multi-cam setting
@@ -656,7 +900,13 @@ def load_sensordata_from_sampletoken(nusc, sample_token, args):
     #                     sensordatas['CAM_BACK_LEFT'], 
     #                     sensordatas['CAM_BACK_RIGHT']], dim=0) # [ncam,3,h,w]
 
-    return qcam, sensordatas['RANGE_DATA'], sensordatas['BEV_DATA'], sensordatas['LIDAR_TOP']
+    return (
+        qcam,
+        sensordatas['RANGE_DATA'],
+        sensordatas['BEV_DATA'],
+        sensordatas['LIDAR_TOP'],
+        sensordatas['LIDAR_TOP_RGB'],
+    )
 
 
 
@@ -933,11 +1183,14 @@ class NuScenesBaseDataset(data.Dataset):
 
     
     def __getitem__(self, index):
+        query_pc_rgb = np.zeros((1, 3), dtype=np.float32)
+        query_pc_normal = np.zeros((1, 3), dtype=np.float32)
         if index >= self.database_num: # query
             # query_image = load_qimage(datapath=self.database_queries_infos[index]['qimage0203path'],split=self.split) 
             # query_pc, query_bev = load_pc_bev(file_path=self.database_queries_infos[index]['qpcpath'],split=self.split)
             sampletoken = self.database_queries_infos[index]['sampletoken']
-            query_image, query_sph, query_bev, query_pc = load_sensordata_from_sampletoken(self.nusc, sampletoken, self.args)
+            query_image, query_sph, query_bev, query_pc, query_pc_rgb = load_sensordata_from_sampletoken(self.nusc, sampletoken, self.args)
+            query_pc_normal = estimate_normals_o3d(query_pc, k=30)
             query_location = self.database_queries_infos[index]['location']
             query_eastnorth = torch.tensor([self.database_queries_infos[index]['east'], self.database_queries_infos[index]['north']]).float()
             db_location = None
@@ -968,6 +1221,8 @@ class NuScenesBaseDataset(data.Dataset):
             'query_bev': query_bev,
             'query_sph': query_sph,
             'query_pc': query_pc,
+            'query_pc_rgb': query_pc_rgb,
+            'query_pc_normal': query_pc_normal,
             'query_location': query_location,
             'query_eastnorth': query_eastnorth,
             'db_map': db_map,
@@ -1097,7 +1352,8 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
         
         # sampletoken = self.database_queries_infos[query_index]['sampletoken']
         sampletoken = self.queries_infos[query_index]['sampletoken']
-        query_image, query_sph, query_bev, query_pc = load_sensordata_from_sampletoken(self.nusc, sampletoken, self.args)
+        query_image, query_sph, query_bev, query_pc, query_pc_rgb = load_sensordata_from_sampletoken(self.nusc, sampletoken, self.args)
+        query_pc_normal = estimate_normals_o3d(query_pc, k=30)
         # query_location = self.queries_infos[query_index]['location']
         query_eastnorth = torch.tensor([self.queries_infos[query_index]['east'], self.queries_infos[query_index]['north']]).float()
         # query_pc = torch.empty(0)
@@ -1149,6 +1405,8 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
             'query_bev': query_bev,
             'query_sph': query_sph,
             'query_pc': query_pc,
+            'query_pc_rgb': query_pc_rgb,
+            'query_pc_normal': query_pc_normal,
             'query_eastnorth': query_eastnorth,
             'db_map': db_map,
             'db_eastnorth': db_eastnorth,
@@ -1204,10 +1462,21 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
     @staticmethod
     def compute_cache_sep(args, model, subset_ds, cache_shape, modelq):
         """Compute the cache containing features of images, which is used to
-        find best positive and hardest negatives."""
-        # subset_dl = DataLoader(dataset=subset_ds, num_workers=args.num_workers,
-        #                        batch_size=args.infer_batch_size, shuffle=False,
-        #                        pin_memory=(args.device == "cuda"))
+        find best positive and hardest negatives.
+
+        DDP parallelism: when a process group is initialized, the db and q
+        dataloaders are sharded via DistributedSampler so each rank only
+        infers 1/world_size of the samples. Results are then all_gather'ed
+        so every rank ends up with the full cache.
+        """
+        import contextlib
+        import torch.distributed as dist
+        from torch.utils.data.distributed import DistributedSampler
+
+        ddp_on = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if ddp_on else 0
+        world = dist.get_world_size() if ddp_on else 1
+
         model = model.eval()
         modelq = modelq.eval()
 
@@ -1222,32 +1491,66 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
 
         subset_ds_db = Subset(parent_ds, db_indices)
         subset_ds_q = Subset(parent_ds, q_indices)
+
+        if ddp_on:
+            db_sampler = DistributedSampler(subset_ds_db, shuffle=False, drop_last=False)
+            q_sampler = DistributedSampler(subset_ds_q, shuffle=False, drop_last=False)
+        else:
+            db_sampler = None
+            q_sampler = None
+
         subset_dl_db = DataLoader(dataset=subset_ds_db, num_workers=args.num_workers,
-                                 batch_size=args.infer_batch_size, shuffle=False,
+                                 batch_size=args.infer_batch_size,
+                                 sampler=db_sampler, shuffle=False,
                                  pin_memory=(args.device == "cuda"),
-                                 collate_fn=nuscenes_collate_fn_cache_db
-                                 )
+                                 collate_fn=nuscenes_collate_fn_cache_db)
         subset_dl_q = DataLoader(dataset=subset_ds_q, num_workers=args.num_workers,
-                                batch_size=args.infer_batch_size, shuffle=False,
+                                batch_size=args.infer_batch_size,
+                                sampler=q_sampler, shuffle=False,
                                 pin_memory=(args.device == "cuda"),
-                                collate_fn=nuscenes_collate_fn_cache_q
-                                )
-        # RAMEfficient2DMatrix can be replaced by np.zeros, but using
-        # RAMEfficient2DMatrix is RAM efficient for full database mining.
+                                collate_fn=nuscenes_collate_fn_cache_q)
+
         cache = RAMEfficient2DMatrix(cache_shape, dtype=np.float32) # [db+q, c]
-        with torch.no_grad():
-            for data_dict, indexes in _progress(subset_dl_db, args=args, desc="cache/db"):
+
+        amp_dt = getattr(args, 'amp_dtype', 'none')
+        if amp_dt == 'bf16':
+            amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+        elif amp_dt == 'fp16':
+            amp_ctx = torch.autocast(device_type='cuda', dtype=torch.float16)
+        else:
+            amp_ctx = contextlib.nullcontext()
+
+        def _run_and_gather(dataloader, mode, m):
+            local_idx_chunks, local_feat_chunks = [], []
+            for data_dict, indexes in _progress(dataloader, args=args, desc=f"cache/{mode}", disable=(rank != 0)):
                 for _k, _v in data_dict.items():
-                    if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
-                # data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
-                features = model(data_dict, mode='db')
-                cache[indexes.numpy()] = features['embedding'].cpu().numpy()
-            for data_dict, indexes in _progress(subset_dl_q, args=args, desc="cache/q"):
-                for _k, _v in data_dict.items():
-                    if isinstance(_v, torch.Tensor): data_dict[_k] = _v.to(args.device)
-                # data_dict = {k: v.to(args.device) for k, v in data_dict.items()}
-                features = modelq(data_dict, mode='q')
-                cache[indexes.numpy()] = features['embedding'].cpu().numpy()
+                    if isinstance(_v, torch.Tensor):
+                        data_dict[_k] = _v.to(args.device)
+                features = m(data_dict, mode=mode)['embedding'].float()
+                local_idx_chunks.append(indexes.cpu())
+                local_feat_chunks.append(features.cpu())
+
+            if len(local_idx_chunks) > 0:
+                local_idx_np = torch.cat(local_idx_chunks, dim=0).numpy()
+                local_feat_np = torch.cat(local_feat_chunks, dim=0).numpy()
+            else:
+                local_idx_np = np.zeros(0, dtype=np.int64)
+                local_feat_np = np.zeros((0, cache_shape[1]), dtype=np.float32)
+
+            if ddp_on:
+                gathered = [None] * world
+                dist.all_gather_object(gathered, (local_idx_np, local_feat_np))
+                for idxs_np, feats_np in gathered:
+                    if len(idxs_np) > 0:
+                        cache[idxs_np] = feats_np
+            else:
+                if len(local_idx_np) > 0:
+                    cache[local_idx_np] = local_feat_np
+
+        with torch.no_grad(), amp_ctx:
+            _run_and_gather(subset_dl_db, 'db', model)
+            _run_and_gather(subset_dl_q, 'q', modelq)
+
         return cache
     
 
@@ -1256,9 +1559,11 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
     def get_query_features(self, query_index, cache):
         query_features = cache[query_index + self.database_num]
         if query_features is None:
-            raise RuntimeError(f"For query {self.queries_paths[query_index]} " +
-                               f"with index {query_index} features have not been computed!\n" +
-                               "There might be some bug with caching")
+            query_id = self.queries_infos[query_index].get('sampletoken', query_index)
+            raise RuntimeError(
+                f"For query {query_id} with index {query_index} features have not been computed!\n"
+                "There might be some bug with caching"
+            )
         return query_features
     
     def get_best_positive_index(self, args, query_index, cache, query_features):
@@ -1393,44 +1698,53 @@ class NuScenesTripletsDataset(NuScenesBaseDataset):
     # =================== partial_sep 
 
     def compute_triplets_partial_sep(self, args, model, modelq):
+        import torch.distributed as dist
+        ddp_on = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if ddp_on else 0
+
         self.triplets_global_indexes = []
-        # Take 1000 random queries
-        if self.mining in ["partial", 'partial_sep']:
-            sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False) 
-        elif self.mining == "msls_weighted":  # Pick night and sideways queries with higher probability
-            sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False, p=self.weights)
-        
-        # Sample 1000 random database images for the negatives
-        sampled_database_indexes = np.random.choice(self.database_num, self.neg_samples_num, replace=False) # why need this step?
-        # Take all the positives
-        positives_indexes = [self.hard_positives_per_query[i] for i in sampled_queries_indexes] # [array, array, ...]
-        positives_indexes = [p for pos in positives_indexes for p in pos] # [int, int, ...]
-        # Merge them into database_indexes and remove duplicates
+
+        if rank == 0:
+            if self.mining in ["partial", 'partial_sep']:
+                sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False)
+            elif self.mining == "msls_weighted":
+                sampled_queries_indexes = np.random.choice(self.queries_num, args.cache_refresh_rate, replace=False, p=self.weights)
+            sampled_database_indexes = np.random.choice(self.database_num, self.neg_samples_num, replace=False)
+            sampled_queries_indexes = sampled_queries_indexes.astype(np.int64)
+            sampled_database_indexes = sampled_database_indexes.astype(np.int64)
+        else:
+            sampled_queries_indexes = np.zeros(args.cache_refresh_rate, dtype=np.int64)
+            sampled_database_indexes = np.zeros(self.neg_samples_num, dtype=np.int64)
+
+        if ddp_on:
+            device = args.device
+            sq_t = torch.from_numpy(sampled_queries_indexes).to(device)
+            sd_t = torch.from_numpy(sampled_database_indexes).to(device)
+            dist.broadcast(sq_t, src=0)
+            dist.broadcast(sd_t, src=0)
+            sampled_queries_indexes = sq_t.cpu().numpy()
+            sampled_database_indexes = sd_t.cpu().numpy()
+
+        positives_indexes = [self.hard_positives_per_query[i] for i in sampled_queries_indexes]
+        positives_indexes = [p for pos in positives_indexes for p in pos]
         database_indexes = list(sampled_database_indexes) + positives_indexes
         database_indexes = list(np.unique(database_indexes))
-        
-        # self is inference True length = 23949
-        subset_ds = Subset(self, database_indexes + list(sampled_queries_indexes + self.database_num))
-        # [partial dataset + partial query] cache
-        # query_index = query_index + self.database_num
+
+        subset_ds = Subset(self, list(database_indexes) + list(sampled_queries_indexes + self.database_num))
         cache_length = len(self)
-        # cache = self.compute_cache(args, model, subset_ds, cache_shape=(cache_length, args.features_dim)) 
-        cache = self.compute_cache_sep(args, model, subset_ds, cache_shape=(cache_length, args.features_dim), modelq=modelq) 
-        
-        # This loop's iterations could be done individually in the __getitem__(). This way is slower but clearer (and yields same results)
-        for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"): # max-3911  min-1
-            query_features = self.get_query_features(query_index, cache) # query_features = cache[query_index + self.database_num]
-            best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
-            
-            # Choose the hardest negatives within sampled_database_indexes, ensuring that there are no positives
-            soft_positives = self.soft_positives_per_query[query_index]
-            neg_indexes = np.setdiff1d(sampled_database_indexes, soft_positives, assume_unique=True)
-            
-            # Take all database images that are negatives and are within the sampled database images (aka database_indexes)
-            neg_indexes = self.get_hardest_negatives_indexes(args, cache, query_features, neg_indexes)
-            self.triplets_global_indexes.append((query_index, best_positive_index, *neg_indexes))
-        # self.triplets_global_indexes is a tensor of shape [1000, 12]
-        self.triplets_global_indexes = torch.tensor(self.triplets_global_indexes)
+        cache = self.compute_cache_sep(args, model, subset_ds, cache_shape=(cache_length, args.features_dim), modelq=modelq)
+
+        if rank == 0:
+            for query_index in _progress(sampled_queries_indexes, args=args, desc="mine"):
+                query_features = self.get_query_features(query_index, cache)
+                best_positive_index = self.get_best_positive_index(args, query_index, cache, query_features)
+                soft_positives = self.soft_positives_per_query[query_index]
+                neg_indexes = np.setdiff1d(sampled_database_indexes, soft_positives, assume_unique=True)
+                neg_indexes = self.get_hardest_negatives_indexes(args, cache, query_features, neg_indexes)
+                self.triplets_global_indexes.append((query_index, best_positive_index, *neg_indexes))
+            self.triplets_global_indexes = torch.tensor(self.triplets_global_indexes)
+        else:
+            self.triplets_global_indexes = torch.zeros((0, 0), dtype=torch.long)
 
 
 
